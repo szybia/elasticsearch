@@ -184,3 +184,18 @@
   - is_false: first_pipeline.description
   - is_true:  second_pipeline
   - is_false: second_pipeline.description
+
+
+---
+"Test PUT setting created_at":
+  - do:
+      catch: bad_request
+      ingest.put_pipeline:
+        id: "my_pipeline"
+        body:  >
+          {
+            "processors": [],
+            "created_at": "2025-07-04T12:50:48.415Z"
+          }
+  - match: { status: 400 }
+  - match: { error.reason: "asd" }

@@ -15,9 +15,11 @@ import org.elasticsearch.core.Nullable;
 import org.elasticsearch.features.NodeFeature;
 import org.elasticsearch.script.ScriptService;
 
+import java.time.Instant;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.OptionalLong;
 import java.util.function.BiConsumer;
 import java.util.function.LongSupplier;
 import java.util.function.Predicate;
@@ -48,6 +50,11 @@ public final class Pipeline {
     private final IngestPipelineFieldAccessPattern fieldAccessPattern;
     @Nullable
     private final Boolean deprecated;
+    @Nullable
+    private final Long createdDate;
+    @Nullable
+    private final Long modifiedDate;
+
 
     public Pipeline(
         String id,
@@ -56,7 +63,7 @@ public final class Pipeline {
         @Nullable Map<String, Object> metadata,
         CompoundProcessor compoundProcessor
     ) {
-        this(id, description, version, metadata, compoundProcessor, IngestPipelineFieldAccessPattern.CLASSIC, null);
+        this(id, description, version, metadata, compoundProcessor, IngestPipelineFieldAccessPattern.CLASSIC, null, null, null);
     }
 
     public Pipeline(
@@ -66,9 +73,11 @@ public final class Pipeline {
         @Nullable Map<String, Object> metadata,
         CompoundProcessor compoundProcessor,
         IngestPipelineFieldAccessPattern fieldAccessPattern,
-        @Nullable Boolean deprecated
+        @Nullable Boolean deprecated,
+        @Nullable Long createdDate,
+        @Nullable Long modifiedDate
     ) {
-        this(id, description, version, metadata, compoundProcessor, System::nanoTime, fieldAccessPattern, deprecated);
+        this(id, description, version, metadata, compoundProcessor, System::nanoTime, fieldAccessPattern, deprecated, createdDate, modifiedDate);
     }
 
     // package private for testing
@@ -80,7 +89,9 @@ public final class Pipeline {
         CompoundProcessor compoundProcessor,
         LongSupplier relativeTimeProvider,
         IngestPipelineFieldAccessPattern fieldAccessPattern,
-        @Nullable Boolean deprecated
+        @Nullable Boolean deprecated,
+        @Nullable Long createdDate,
+        @Nullable Long modifiedDate
     ) {
         this.id = id;
         this.description = description;
@@ -91,6 +102,8 @@ public final class Pipeline {
         this.relativeTimeProvider = relativeTimeProvider;
         this.fieldAccessPattern = fieldAccessPattern;
         this.deprecated = deprecated;
+        this.createdDate = createdDate;
+        this.modifiedDate = modifiedDate;
     }
 
     /**
@@ -147,6 +160,8 @@ public final class Pipeline {
             processorFactories,
             projectId
         );
+        String createdAt = ConfigurationUtils.readOptionalStringOrLongProperty(null, null, config, "created_at");
+        String modifiedAt = ConfigurationUtils.readOptionalStringOrLongProperty(null, null, config, "modified_at");
         if (config.isEmpty() == false) {
             throw new ElasticsearchParseException(
                 "pipeline ["
@@ -159,7 +174,11 @@ public final class Pipeline {
             throw new ElasticsearchParseException("pipeline [" + id + "] cannot have an empty on_failure option defined");
         }
         CompoundProcessor compoundProcessor = new CompoundProcessor(false, processors, onFailureProcessors);
-        return new Pipeline(id, description, version, metadata, compoundProcessor, accessPattern, deprecated);
+        Long createdAtMillis = createdAt == null ? null : Instant.parse(createdAt).toEpochMilli();
+        Long modifiedAtMillis = modifiedAt == null ? null : Instant.parse(modifiedAt).toEpochMilli();
+        return new Pipeline(
+            id, description, version, metadata, compoundProcessor, accessPattern, deprecated, createdAtMillis, modifiedAtMillis
+        );
     }
 
     /**
@@ -264,5 +283,13 @@ public final class Pipeline {
 
     public boolean isDeprecated() {
         return Boolean.TRUE.equals(deprecated);
+    }
+
+    public OptionalLong getCreatedAt() {
+        return createdDate == null ? OptionalLong.empty() : OptionalLong.of(createdDate);
+    }
+
+    public OptionalLong getModifiedAt() {
+        return modifiedDate == null ? OptionalLong.empty() : OptionalLong.of(modifiedDate);
     }
 }

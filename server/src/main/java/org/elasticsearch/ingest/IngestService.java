@@ -81,6 +81,7 @@ import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.xcontent.XContentBuilder;
 
 import java.io.IOException;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -570,6 +571,21 @@ public class IngestService implements ClusterStateApplier, ReportingService<Inge
         validatePipeline(ingestInfos, projectId, request.getId(), config);
     }
 
+    public static void validateTracking(ProjectMetadata metadata, PutPipelineRequest request) {
+        final Map<String, Object> pipelineConfig = XContentHelper.convertToMap(
+            request.getSource(), false, request.getXContentType()
+        ).v2();
+
+        /*
+        raise exception if:
+        1. if existing pipeline exists
+          - if created_date doesn't exit
+          -
+        2. no existing pipeline
+          - created_date or modified_date exist
+         */
+    }
+
     public static boolean isNoOpPipelineUpdate(ProjectMetadata metadata, PutPipelineRequest request) {
         IngestMetadata currentIngestMetadata = metadata.custom(IngestMetadata.TYPE);
         if (request.getVersion() == null
@@ -751,7 +767,23 @@ public class IngestService implements ClusterStateApplier, ReportingService<Inge
                 pipelines = new HashMap<>();
             }
 
-            pipelines.put(request.getId(), new PipelineConfiguration(request.getId(), pipelineSource, request.getXContentType()));
+            Instant now = Instant.now();
+            Map<String, Object> newPipelineConfig = XContentHelper.convertToMap(pipelineSource, true, request.getXContentType()).v2();
+            //  todo(sz): check cluster syncs to make sure this isn't overwritten
+            newPipelineConfig.put("modified_at", now.toString());
+            PipelineConfiguration existingPipeline = pipelines.get(request.getId());
+            if (existingPipeline == null) {
+                newPipelineConfig.put("created_at", now.toString());
+            } else {
+                Object existingCreatedAt = existingPipeline.getConfig().get("created_at");
+                // only set/carry over `created_at` if existing pipeline already has it.
+                // would be confusing if existing pipelines were all updated to have `created_at` set to now.
+                if (existingCreatedAt != null) {
+                    newPipelineConfig.put("created_at", existingCreatedAt);
+                }
+            }
+
+            pipelines.put(request.getId(), new PipelineConfiguration(request.getId(), newPipelineConfig));
             return new IngestMetadata(pipelines);
         }
     }
