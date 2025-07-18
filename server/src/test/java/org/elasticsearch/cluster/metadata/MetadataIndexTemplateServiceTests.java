@@ -2755,11 +2755,7 @@ public class MetadataIndexTemplateServiceTests extends ESSingleNodeTestCase {
         final String name = "test-template";
         final ProjectId projectId = randomProjectIdOrDefault();
 
-        final Template template = new Template(
-            Settings.builder().put("index.number_of_shards", 1).build(),
-            null,
-            null
-        );
+        final Template template = new Template(Settings.builder().put("index.number_of_shards", 1).build(), null, null);
         final MetadataIndexTemplateService service = getMetadataIndexTemplateService();
 
         // create template
@@ -2782,17 +2778,19 @@ public class MetadataIndexTemplateServiceTests extends ESSingleNodeTestCase {
         final String name = "test-template";
         final ProjectId projectId = randomProjectIdOrDefault();
         final MetadataIndexTemplateService service = getMetadataIndexTemplateService();
-        final ComponentTemplate initialTemplate = new ComponentTemplate(new Template(
-            Settings.builder().put("index.number_of_shards", 1).build(),
-            null,
+        final ComponentTemplate initialTemplate = new ComponentTemplate(
+            new Template(Settings.builder().put("index.number_of_shards", 1).build(), null, null),
+            1L,
             null
-        ), 1L, null);
+        );
         final ProjectMetadata initialMetadata = ProjectMetadata.builder(projectId)
             .componentTemplates(Map.of(name, initialTemplate))
             .build();
 
         final ComponentTemplate updateTemplate = new ComponentTemplate(
-            new Template( Settings.builder().put("index.number_of_shards", 2).build(), null, null ), 1L, null
+            new Template(Settings.builder().put("index.number_of_shards", 2).build(), null, null),
+            1L,
+            null
         );
         final ProjectMetadata afterCreateMetadata = service.addComponentTemplate(initialMetadata, false, name, updateTemplate);
 
@@ -2806,7 +2804,7 @@ public class MetadataIndexTemplateServiceTests extends ESSingleNodeTestCase {
         final ProjectId projectId = randomProjectIdOrDefault();
         final MetadataIndexTemplateService service = getMetadataIndexTemplateService();
         final ProjectMetadata initialMetadata = ProjectMetadata.builder(projectId).build();
-        final Template template = new Template( Settings.builder().put("index.number_of_shards", 1).build(), null, null);
+        final Template template = new Template(Settings.builder().put("index.number_of_shards", 1).build(), null, null);
 
         // create template
         final ComponentTemplate componentTemplate = new ComponentTemplate(template, 1L, null);
@@ -2818,7 +2816,10 @@ public class MetadataIndexTemplateServiceTests extends ESSingleNodeTestCase {
         // update template
         final ComponentTemplate updatedComponentTemplate = new ComponentTemplate(template, 2L, null);
         final ProjectMetadata afterUpdateMetadata = service.addComponentTemplate(
-            afterCreateMetadata, false, name, updatedComponentTemplate
+            afterCreateMetadata,
+            false,
+            name,
+            updatedComponentTemplate
         );
         final ComponentTemplate newTemplate = afterUpdateMetadata.componentTemplates().get(name);
         assertThat(newTemplate.createdDateMillis().orElseThrow(), is(0L));

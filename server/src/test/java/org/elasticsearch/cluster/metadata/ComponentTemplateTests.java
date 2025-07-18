@@ -108,7 +108,14 @@ public class ComponentTemplateTests extends SimpleDiffableSerializationTestCase<
         } else {
             modifiedDate = null;
         }
-        return new ComponentTemplate(template, randomBoolean() ? null : randomNonNegativeLong(), meta, deprecated, createdDate, modifiedDate);
+        return new ComponentTemplate(
+            template,
+            randomBoolean() ? null : randomNonNegativeLong(),
+            meta,
+            deprecated,
+            createdDate,
+            modifiedDate
+        );
     }
 
     public static ResettableValue<DataStreamOptions.Template> randomDataStreamOptionsTemplate() {
