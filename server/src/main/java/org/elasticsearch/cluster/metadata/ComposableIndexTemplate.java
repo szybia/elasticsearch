@@ -52,9 +52,6 @@ import java.util.Optional;
  * index.
  */
 public class ComposableIndexTemplate implements SimpleDiffable<ComposableIndexTemplate>, ToXContentObject {
-    // always output millis even if instantSource returns millis == 0
-    private static final DateTimeFormatter ISO8601_WITH_MILLIS_FORMATTER = new DateTimeFormatterBuilder().appendInstant(3)
-        .toFormatter(Locale.ROOT);
 
     private static final ParseField INDEX_PATTERNS = new ParseField("index_patterns");
     private static final ParseField TEMPLATE = new ParseField("template");
@@ -66,7 +63,9 @@ public class ComposableIndexTemplate implements SimpleDiffable<ComposableIndexTe
     private static final ParseField ALLOW_AUTO_CREATE = new ParseField("allow_auto_create");
     private static final ParseField IGNORE_MISSING_COMPONENT_TEMPLATES = new ParseField("ignore_missing_component_templates");
     private static final ParseField DEPRECATED = new ParseField("deprecated");
+    private static final ParseField CREATED_DATE_MILLIS = new ParseField("created_date_millis");
     private static final ParseField CREATED_DATE = new ParseField("created_date");
+    private static final ParseField MODIFIED_DATE_MILLIS = new ParseField("modified_date_millis");
     private static final ParseField MODIFIED_DATE = new ParseField("modified_date");
     public static final CompressedXContent EMPTY_MAPPINGS;
     static {
@@ -81,10 +80,7 @@ public class ComposableIndexTemplate implements SimpleDiffable<ComposableIndexTe
     public static final ConstructingObjectParser<ComposableIndexTemplate, Void> PARSER = new ConstructingObjectParser<>(
         "index_template",
         false,
-        a -> {
-            final String createdDate = (String) a[10];
-            final String modifiedDate = (String) a[11];
-            return ComposableIndexTemplate.builder()
+        a -> ComposableIndexTemplate.builder()
                 .indexPatterns((List<String>) a[0])
                 .template((Template) a[1])
                 .componentTemplates((List<String>) a[2])
@@ -95,10 +91,9 @@ public class ComposableIndexTemplate implements SimpleDiffable<ComposableIndexTe
                 .allowAutoCreate((Boolean) a[7])
                 .ignoreMissingComponentTemplates((List<String>) a[8])
                 .deprecated((Boolean) a[9])
-                .createdDate(createdDate == null ? null : Instant.parse(createdDate).toEpochMilli())
-                .modifiedDate(modifiedDate == null ? null : Instant.parse(modifiedDate).toEpochMilli())
-                .build();
-        }
+                .createdDate((Long) a[10])
+                .modifiedDate((Long) a[11])
+                .build()
     );
 
     static {
@@ -112,8 +107,8 @@ public class ComposableIndexTemplate implements SimpleDiffable<ComposableIndexTe
         PARSER.declareBoolean(ConstructingObjectParser.optionalConstructorArg(), ALLOW_AUTO_CREATE);
         PARSER.declareStringArray(ConstructingObjectParser.optionalConstructorArg(), IGNORE_MISSING_COMPONENT_TEMPLATES);
         PARSER.declareBoolean(ConstructingObjectParser.optionalConstructorArg(), DEPRECATED);
-        PARSER.declareString(ConstructingObjectParser.optionalConstructorArg(), CREATED_DATE);
-        PARSER.declareString(ConstructingObjectParser.optionalConstructorArg(), MODIFIED_DATE);
+        PARSER.declareLong(ConstructingObjectParser.optionalConstructorArg(), CREATED_DATE_MILLIS);
+        PARSER.declareLong(ConstructingObjectParser.optionalConstructorArg(), MODIFIED_DATE_MILLIS);
     }
 
     private final List<String> indexPatterns;
@@ -354,10 +349,18 @@ public class ComposableIndexTemplate implements SimpleDiffable<ComposableIndexTe
             builder.field(DEPRECATED.getPreferredName(), deprecated);
         }
         if (this.createdDateMillis != null) {
-            builder.field(CREATED_DATE.getPreferredName(), formatDate(this.createdDateMillis));
+            builder.timestampFieldsFromUnixEpochMillis(
+                CREATED_DATE_MILLIS.getPreferredName(),
+                CREATED_DATE.getPreferredName(),
+                this.createdDateMillis
+            );
         }
         if (this.modifiedDateMillis != null) {
-            builder.field(MODIFIED_DATE.getPreferredName(), formatDate(this.modifiedDateMillis));
+            builder.timestampFieldsFromUnixEpochMillis(
+                MODIFIED_DATE_MILLIS.getPreferredName(),
+                MODIFIED_DATE.getPreferredName(),
+                this.modifiedDateMillis
+            );
         }
         builder.endObject();
         return builder;
@@ -447,10 +450,6 @@ public class ComposableIndexTemplate implements SimpleDiffable<ComposableIndexTe
         } else {
             throw new IllegalArgumentException("Unexpected token: " + token);
         }
-    }
-
-    private static String formatDate(long dateMillis) {
-        return ISO8601_WITH_MILLIS_FORMATTER.format(Instant.ofEpochMilli(dateMillis));
     }
 
     @Override
