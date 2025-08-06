@@ -25,6 +25,7 @@ import org.elasticsearch.index.mapper.DataStreamTimestampFieldMapper;
 import org.elasticsearch.index.mapper.MapperService;
 import org.elasticsearch.index.mapper.Mapping;
 import org.elasticsearch.xcontent.ConstructingObjectParser;
+import org.elasticsearch.xcontent.ObjectParser;
 import org.elasticsearch.xcontent.ParseField;
 import org.elasticsearch.xcontent.ToXContentObject;
 import org.elasticsearch.xcontent.XContentBuilder;
@@ -105,6 +106,22 @@ public class ComposableIndexTemplate implements SimpleDiffable<ComposableIndexTe
         PARSER.declareBoolean(ConstructingObjectParser.optionalConstructorArg(), DEPRECATED);
         PARSER.declareLong(ConstructingObjectParser.optionalConstructorArg(), CREATED_DATE_MILLIS);
         PARSER.declareLong(ConstructingObjectParser.optionalConstructorArg(), MODIFIED_DATE_MILLIS);
+
+        PARSER.declareField(ConstructingObjectParser.optionalConstructorArg(),
+            (p, c) -> {
+                throw new IllegalArgumentException(
+                    "provided a template property which is managed by the system: created_date");
+            },
+            CREATED_DATE,
+            ObjectParser.ValueType.STRING);
+
+        PARSER.declareField(ConstructingObjectParser.optionalConstructorArg(),
+            (p, c) -> {
+                throw new IllegalArgumentException(
+                    "provided a template property which is managed by the system: modified_date");
+            },
+            MODIFIED_DATE,
+            ObjectParser.ValueType.STRING);
     }
 
     private final List<String> indexPatterns;
