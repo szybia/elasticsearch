@@ -416,6 +416,7 @@ public class EnterpriseGeoIpDownloader extends AllocatedPersistentTask {
             logger.error("exception during databases update", e);
         }
         try {
+            Thread.sleep(250);
             cleanDatabases();
         } catch (Exception e) {
             logger.error("exception during databases cleanup", e);

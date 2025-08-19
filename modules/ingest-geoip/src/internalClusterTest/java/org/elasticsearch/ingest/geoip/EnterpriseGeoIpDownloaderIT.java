@@ -47,11 +47,13 @@ import org.junit.After;
 import org.junit.ClassRule;
 
 import java.io.IOException;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.elasticsearch.ingest.EnterpriseGeoIpTask.ENTERPRISE_GEOIP_DOWNLOADER;
 import static org.elasticsearch.ingest.geoip.EnterpriseGeoIpDownloaderTaskExecutor.IPINFO_TOKEN_SETTING;
@@ -118,8 +120,7 @@ public class EnterpriseGeoIpDownloaderIT extends ESIntegTestCase {
         final String targetField = "ip-result";
 
         startEnterpriseGeoIpDownloaderTask(ProjectId.DEFAULT);
-        configureMaxmindDatabase(MAXMIND_DATABASE_TYPE);
-        configureIpinfoDatabase(IPINFO_DATABASE_TYPE);
+        configureDatabasesConcurrently(MAXMIND_DATABASE_TYPE, IPINFO_DATABASE_TYPE);
         waitAround();
         createPipeline(geoipPipelineName, "geoip", MAXMIND_DATABASE_TYPE, sourceField, targetField);
         createPipeline(iplocationPipelineName, "ip_location", IPINFO_DATABASE_TYPE, sourceField, targetField);
@@ -151,7 +152,7 @@ public class EnterpriseGeoIpDownloaderIT extends ESIntegTestCase {
     }
 
     @After
-    public void cleanup() throws InterruptedException {
+    public void cleanup() throws Exception {
         /*
          * This method cleans up the database configurations that the test created. This allows the test to be run repeatedly.
          */
@@ -161,6 +162,15 @@ public class EnterpriseGeoIpDownloaderIT extends ESIntegTestCase {
             .<AcknowledgedResponse>andThen(l -> deleteDatabaseConfiguration(IPINFO_CONFIGURATION, l))
             .addListener(listener);
         latch.await(10, TimeUnit.SECONDS);
+        PersistentTasksService persistentTasksService = internalCluster().getInstance(PersistentTasksService.class);
+        AtomicBoolean completed = new AtomicBoolean(false);
+        persistentTasksService.sendProjectRemoveRequest(ProjectId.DEFAULT, ENTERPRISE_GEOIP_DOWNLOADER, TimeValue.MAX_VALUE,  ActionListener.wrap(r -> {
+            logger.info("stopped enterprise geoip downloader task");
+            completed.set(true);
+        }, e -> {
+            fail(e, "Failed to stop enterprise geoip downloader task");
+        }));
+        assertBusy(() -> assertTrue(completed.get()));
     }
 
     private void deleteDatabaseConfiguration(String configurationName, ActionListener<AcknowledgedResponse> listener) {
@@ -172,21 +182,29 @@ public class EnterpriseGeoIpDownloaderIT extends ESIntegTestCase {
             );
     }
 
-    private void startEnterpriseGeoIpDownloaderTask(ProjectId projectId) {
+    private void startEnterpriseGeoIpDownloaderTask(ProjectId projectId) throws Exception {
         PersistentTasksService persistentTasksService = internalCluster().getInstance(PersistentTasksService.class);
+        AtomicBoolean completed = new AtomicBoolean(false);
         persistentTasksService.sendProjectStartRequest(
             projectId,
             ENTERPRISE_GEOIP_DOWNLOADER,
             ENTERPRISE_GEOIP_DOWNLOADER,
             new EnterpriseGeoIpTask.EnterpriseGeoIpTaskParams(),
             TimeValue.MAX_VALUE,
-            ActionListener.wrap(r -> logger.debug("Started enterprise geoip downloader task"), e -> {
+            ActionListener.wrap(r -> {
+                logger.info("Started enterprise geoip downloader task");
+                completed.set(true);
+            }, e -> {
                 Throwable t = e instanceof RemoteTransportException ? ExceptionsHelper.unwrapCause(e) : e;
-                if (t instanceof ResourceAlreadyExistsException == false) {
-                    logger.error("failed to create enterprise geoip downloader task", e);
+                if (t instanceof ResourceAlreadyExistsException) {
+                    logger.info("enterprise geoip downloader task already started");
+                    completed.set(true);
+                } else {
+                    fail(e, "Failed to create enterprise geoip downloader task");
                 }
             })
         );
+        assertBusy(() -> assertTrue(completed.get()));
     }
 
     private void configureMaxmindDatabase(String databaseType) {
@@ -215,12 +233,44 @@ public class EnterpriseGeoIpDownloaderIT extends ESIntegTestCase {
             .actionGet();
     }
 
+    private void configureDatabasesConcurrently(String maxmindDatabaseType, String ipinfoDatabaseType) throws Exception {
+        CountDownLatch latch = new CountDownLatch(2);
+
+        Thread maxmindThread = new Thread(() -> {
+            try {
+                logger.info("szy: running maxMind on thread={}", Thread.currentThread().getName());
+                configureMaxmindDatabase(maxmindDatabaseType);
+                latch.countDown();
+            } catch (Exception e) {
+                fail(e, "Failed to configure Maxmind database");
+            }
+        });
+
+        Thread ipinfoThread = new Thread(() -> {
+            logger.info("szy: running ipInfo on thread={}", Thread.currentThread().getName());
+            try {
+                configureIpinfoDatabase(ipinfoDatabaseType);
+                latch.countDown();
+            } catch (Exception e) {
+                fail(e, "Failed to configure Ipinfo database");
+            }
+        });
+
+        ipinfoThread.start();
+        maxmindThread.start();
+
+        if (!latch.await(10, TimeUnit.SECONDS)) {
+            fail("Timed out waiting for database configurations to complete");
+        }
+    }
+
     private void waitAround() throws Exception {
         ensureGreen(GeoIpDownloader.DATABASES_INDEX);
         assertBusy(() -> {
             SearchResponse searchResponse = client().search(new SearchRequest(GeoIpDownloader.DATABASES_INDEX)).actionGet();
             try {
-                assertThat(searchResponse.getHits().getHits().length, equalTo(2));
+                final var hits = searchResponse.getHits().getHits();
+                assertThat(Arrays.toString(hits), hits.length, equalTo(2));
             } finally {
                 searchResponse.decRef();
             }
