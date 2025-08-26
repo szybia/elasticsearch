@@ -305,6 +305,7 @@ module org.elasticsearch.server {
     exports org.elasticsearch.monitor.process;
     exports org.elasticsearch.node;
     exports org.elasticsearch.node.internal to org.elasticsearch.internal.sigterm;
+    exports org.elasticsearch.node.stats;
     exports org.elasticsearch.persistent;
     exports org.elasticsearch.persistent.decider;
     exports org.elasticsearch.plugins;

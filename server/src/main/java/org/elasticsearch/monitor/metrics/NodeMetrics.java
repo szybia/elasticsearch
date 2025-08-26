@@ -820,6 +820,7 @@ public class NodeMetrics extends AbstractLifecycleComponent {
             null,
             null,
             null,
+            null,
             null
         );
         private boolean refresh;

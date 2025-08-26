@@ -34,6 +34,7 @@ import org.elasticsearch.cluster.project.ProjectResolver;
 import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.common.CheckedBiConsumer;
 import org.elasticsearch.common.Strings;
+import org.elasticsearch.common.io.stream.NamedWriteable;
 import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.common.logging.DeprecationCategory;
@@ -79,6 +80,7 @@ import org.elasticsearch.license.LicenseService;
 import org.elasticsearch.license.LicensedFeature;
 import org.elasticsearch.license.XPackLicenseState;
 import org.elasticsearch.node.PluginComponentBinding;
+import org.elasticsearch.node.stats.NodeStatsExtension;
 import org.elasticsearch.persistent.PersistentTasksExecutor;
 import org.elasticsearch.persistent.PersistentTasksService;
 import org.elasticsearch.plugins.ClusterCoordinationPlugin;
@@ -88,6 +90,7 @@ import org.elasticsearch.plugins.FieldPredicate;
 import org.elasticsearch.plugins.IngestPlugin;
 import org.elasticsearch.plugins.MapperPlugin;
 import org.elasticsearch.plugins.NetworkPlugin;
+import org.elasticsearch.plugins.NodeStatsPlugin;
 import org.elasticsearch.plugins.PersistentTaskPlugin;
 import org.elasticsearch.plugins.Plugin;
 import org.elasticsearch.plugins.ReloadablePlugin;
@@ -334,6 +337,7 @@ import org.elasticsearch.xpack.security.authz.interceptor.UpdateRequestIntercept
 import org.elasticsearch.xpack.security.authz.interceptor.ValidateRequestInterceptor;
 import org.elasticsearch.xpack.security.authz.store.CompositeRolesStore;
 import org.elasticsearch.xpack.security.authz.store.DeprecationRoleDescriptorConsumer;
+import org.elasticsearch.xpack.security.authz.store.DlsCacheStats;
 import org.elasticsearch.xpack.security.authz.store.FileRolesStore;
 import org.elasticsearch.xpack.security.authz.store.NativePrivilegeStore;
 import org.elasticsearch.xpack.security.authz.store.NativeRolesStore;
@@ -475,7 +479,8 @@ public class Security extends Plugin
         SearchPlugin,
         RestServerActionPlugin,
         ReloadablePlugin,
-        PersistentTaskPlugin {
+        PersistentTaskPlugin,
+        NodeStatsPlugin {
 
     public static final String SECURITY_CRYPTO_THREAD_POOL_NAME = XPackField.SECURITY + "-crypto";
 
@@ -2502,6 +2507,22 @@ public class Security extends Plugin
     // visible for testing
     OperatorPrivileges.OperatorPrivilegesService getOperatorPrivilegesService() {
         return operatorPrivilegesService.get();
+    }
+
+    @Override
+    public List<NodeStatsExtension> getNodeStatsExtensions() {
+        if (enabled == false) {
+            return List.of();
+        }
+        return List.of(new SecurityNodeStatsExtension(dlsBitsetCache.get()));
+    }
+
+    @Override
+    public List<NamedWriteableRegistry.Entry> getNamedWriteables() {
+        return List.of(
+            new NamedWriteableRegistry.Entry(NamedWriteable.class, DlsCacheStats.WRITEABLE_NAME, DlsCacheStats::new),
+            new NamedWriteableRegistry.Entry(NamedWriteable.class, SecurityNodeStatsExtension.SecurityStats.WRITEABLE_NAME, SecurityNodeStatsExtension.SecurityStats::new)
+        );
     }
 
     @Override

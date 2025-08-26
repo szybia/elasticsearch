@@ -14,11 +14,13 @@ import org.elasticsearch.Version;
 import org.elasticsearch.action.admin.cluster.node.info.ComponentVersionNumber;
 import org.elasticsearch.action.admin.cluster.node.info.NodeInfo;
 import org.elasticsearch.action.admin.cluster.node.stats.NodeStats;
+import org.elasticsearch.action.admin.cluster.node.stats.XPackStats;
 import org.elasticsearch.action.admin.indices.stats.CommonStatsFlags;
 import org.elasticsearch.action.search.SearchTransportService;
 import org.elasticsearch.cluster.coordination.Coordinator;
 import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.cluster.version.CompatibilityVersions;
+import org.elasticsearch.common.io.stream.NamedWriteable;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.settings.SettingsFilter;
 import org.elasticsearch.common.unit.ByteSizeValue;
@@ -31,7 +33,11 @@ import org.elasticsearch.index.IndexingPressure;
 import org.elasticsearch.indices.IndicesService;
 import org.elasticsearch.indices.breaker.CircuitBreakerService;
 import org.elasticsearch.ingest.IngestService;
+import org.elasticsearch.logging.LogManager;
+import org.elasticsearch.logging.Logger;
 import org.elasticsearch.monitor.MonitorService;
+import org.elasticsearch.node.stats.NodeStatsExtension;
+import org.elasticsearch.plugins.NodeStatsPlugin;
 import org.elasticsearch.plugins.PluginsService;
 import org.elasticsearch.repositories.RepositoriesService;
 import org.elasticsearch.script.ScriptService;
@@ -41,12 +47,18 @@ import org.elasticsearch.transport.TransportService;
 
 import java.io.Closeable;
 import java.io.IOException;
+import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 public class NodeService implements Closeable {
+
+    private static final Logger LOG = LogManager.getLogger(NodeService.class);
+
     private final Settings settings;
     private final ThreadPool threadPool;
     private final MonitorService monitorService;
@@ -66,6 +78,7 @@ public class NodeService implements Closeable {
     private final RepositoriesService repositoriesService;
     private final Map<String, Integer> componentVersions;
     private final CompatibilityVersions compatibilityVersions;
+    private final List<NodeStatsExtension> nodeStatsExtensions;
 
     NodeService(
         Settings settings,
@@ -107,6 +120,7 @@ public class NodeService implements Closeable {
         this.repositoriesService = repositoriesService;
         this.componentVersions = findComponentVersions(pluginService);
         this.compatibilityVersions = compatibilityVersions;
+        this.nodeStatsExtensions = getNodeStatsExtensions(pluginService);
         clusterService.addStateApplier(ingestService);
     }
 
@@ -201,7 +215,8 @@ public class NodeService implements Closeable {
             scriptCache ? scriptService.cacheStats() : null,
             indexingPressure ? this.indexingPressure.stats() : null,
             repositoriesStats ? this.repositoriesService.getRepositoriesThrottlingStats() : null,
-            null
+            null,
+            getXPackStats().orElse(null)
         );
     }
 
@@ -226,4 +241,26 @@ public class NodeService implements Closeable {
         return indicesService.awaitClose(timeout, timeUnit);
     }
 
+    private List<NodeStatsExtension> getNodeStatsExtensions(final PluginsService pluginsService) {
+        return pluginsService.filterPlugins(NodeStatsPlugin.class).map(NodeStatsPlugin::getNodeStatsExtensions).flatMap(List::stream).toList();
+    }
+
+    private Optional<XPackStats> getXPackStats() {
+        if (nodeStatsExtensions.isEmpty()) {
+            return Optional.empty();
+        }
+
+        final Map<String, NamedWriteable> extensionStats = new HashMap<>();
+        for (final NodeStatsExtension extension : nodeStatsExtensions) {
+            try {
+                NamedWriteable stats = extension.getStats();
+                if (stats != null) {
+                    extensionStats.put(extension.getName(), stats);
+                }
+            } catch (Exception e) {
+                LOG.warn("Failed to get stats from extension [{}]", extension.getName(), e);
+            }
+        }
+        return Optional.of(new XPackStats(extensionStats));
+    }
 }

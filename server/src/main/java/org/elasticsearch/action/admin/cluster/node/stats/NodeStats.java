@@ -107,6 +107,9 @@ public class NodeStats extends BaseNodeResponse implements ChunkedToXContent {
     @Nullable
     private final NodeAllocationStats nodeAllocationStats;
 
+    @Nullable
+    private final XPackStats xpackStats;
+
     public NodeStats(StreamInput in) throws IOException {
         super(in);
         timestamp = in.readVLong();
@@ -133,6 +136,9 @@ public class NodeStats extends BaseNodeResponse implements ChunkedToXContent {
         nodeAllocationStats = in.getTransportVersion().onOrAfter(TransportVersions.V_8_14_0)
             ? in.readOptionalWriteable(NodeAllocationStats::new)
             : null;
+        xpackStats = in.getTransportVersion().onOrAfter(TransportVersions.PLUGGABLE_NODE_STATS)
+            ? in.readOptionalWriteable(XPackStats::new)
+            : null;
     }
 
     public NodeStats(
@@ -154,7 +160,8 @@ public class NodeStats extends BaseNodeResponse implements ChunkedToXContent {
         @Nullable ScriptCacheStats scriptCacheStats,
         @Nullable IndexingPressureStats indexingPressureStats,
         @Nullable RepositoriesStats repositoriesStats,
-        @Nullable NodeAllocationStats nodeAllocationStats
+        @Nullable NodeAllocationStats nodeAllocationStats,
+        @Nullable XPackStats xpackStats
     ) {
         super(node);
         this.timestamp = timestamp;
@@ -175,6 +182,7 @@ public class NodeStats extends BaseNodeResponse implements ChunkedToXContent {
         this.indexingPressureStats = indexingPressureStats;
         this.repositoriesStats = repositoriesStats;
         this.nodeAllocationStats = nodeAllocationStats;
+        this.xpackStats = xpackStats;
     }
 
     public NodeStats withNodeAllocationStats(
@@ -200,7 +208,8 @@ public class NodeStats extends BaseNodeResponse implements ChunkedToXContent {
             scriptCacheStats,
             indexingPressureStats,
             repositoriesStats,
-            nodeAllocationStats
+            nodeAllocationStats,
+            xpackStats
         );
     }
 
@@ -316,6 +325,11 @@ public class NodeStats extends BaseNodeResponse implements ChunkedToXContent {
         return nodeAllocationStats;
     }
 
+    @Nullable
+    public XPackStats getXPackStats() {
+        return xpackStats;
+    }
+
     @Override
     public void writeTo(StreamOutput out) throws IOException {
         super.writeTo(out);
@@ -344,6 +358,9 @@ public class NodeStats extends BaseNodeResponse implements ChunkedToXContent {
         }
         if (out.getTransportVersion().onOrAfter(TransportVersions.V_8_14_0)) {
             out.writeOptionalWriteable(nodeAllocationStats);
+        }
+        if (out.getTransportVersion().onOrAfter(TransportVersions.PLUGGABLE_NODE_STATS)) {
+            out.writeOptionalWriteable(xpackStats);
         }
     }
 
@@ -386,7 +403,8 @@ public class NodeStats extends BaseNodeResponse implements ChunkedToXContent {
                 (builder, p) -> builder.value(ifPresent(getIndexingPressureStats()), p)
                     .value(ifPresent(getRepositoriesStats()), p)
                     .value(ifPresent(getNodeAllocationStats()), p)
-            )
+            ),
+            ifPresent(getXPackStats()).toXContentChunked(outerParams)
         );
     }
 
