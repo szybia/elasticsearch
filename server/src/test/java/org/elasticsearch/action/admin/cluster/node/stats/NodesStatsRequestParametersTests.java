@@ -60,7 +60,8 @@ public class NodesStatsRequestParametersTests extends ESTestCase {
             Metric.SCRIPT_CACHE,
             Metric.INDEXING_PRESSURE,
             Metric.REPOSITORIES,
-            Metric.ALLOCATIONS
+            Metric.ALLOCATIONS,
+            Metric.PLUGINS
         );
     }
 

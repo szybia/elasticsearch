@@ -176,7 +176,7 @@ public class TransportNodesStatsAction extends TransportNodesAction<
             metrics.contains(Metric.SCRIPT_CACHE),
             metrics.contains(Metric.INDEXING_PRESSURE),
             metrics.contains(Metric.REPOSITORIES),
-            metrics.contains(Metric.PLUGINS)
+            extraMetrics
         );
     }
 

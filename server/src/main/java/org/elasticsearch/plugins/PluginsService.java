@@ -537,4 +537,5 @@ public class PluginsService implements ReportingService<PluginsAndModules> {
     public final <T> Stream<T> filterPlugins(Class<T> type) {
         return plugins().stream().filter(x -> type.isAssignableFrom(x.instance().getClass())).map(p -> ((T) p.instance()));
     }
+
 }

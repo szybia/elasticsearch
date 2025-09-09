@@ -18,6 +18,7 @@ import org.elasticsearch.xcontent.ToXContent;
 
 import java.io.IOException;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 
@@ -28,39 +29,45 @@ import static org.elasticsearch.common.xcontent.ChunkedToXContentHelper.chunk;
  */
 public class PluginNodeStats implements Writeable, ChunkedToXContent {
 
-    private final Map<String, NodeStatsPlugin.Stats> pluginNameToStats;
+    private final Map<String, ? extends NodeStatsPlugin.Statistics> pluginStatistics;
 
-    public PluginNodeStats(Map<String, NodeStatsPlugin.Stats> pluginNameToStats) {
-        this.pluginNameToStats = Objects.requireNonNull(pluginNameToStats);
+    public PluginNodeStats(Map<String, ? extends NodeStatsPlugin.Statistics> pluginStatistics) {
+        this.pluginStatistics = new LinkedHashMap<>(pluginStatistics);
     }
 
     public PluginNodeStats(StreamInput in) throws IOException {
-        this(in.readImmutableMap(StreamInput::readString, in2 -> in2.readNamedWriteable(NodeStatsPlugin.Stats.class)));
+        this.pluginStatistics = in.readOrderedMap(StreamInput::readString, in2 -> in2.readNamedWriteable(NodeStatsPlugin.Statistics.class));
     }
 
     @Override
     public void writeTo(StreamOutput out) throws IOException {
-        out.writeMap(pluginNameToStats, StreamOutput::writeString, StreamOutput::writeNamedWriteable);
+        out.writeMap(pluginStatistics, StreamOutput::writeNamedWriteable);
     }
 
     @Override
     public Iterator<? extends ToXContent> toXContentChunked(ToXContent.Params params) {
         return chunk((builder, p) -> {
-            builder.startObject("plugins");
-            for (Map.Entry<String, NodeStatsPlugin.Stats> entry : pluginNameToStats.entrySet()) {
-                builder.field(entry.getKey(), entry.getValue(), p);
+            for (final var statistics : pluginStatistics.entrySet()) {
+                builder.startObject(statistics.getKey());
+                statistics.getValue().toXContent(builder, p);
+                builder.endObject();
             }
-            return builder.endObject();
+            return builder;
         });
     }
 
     @Override
     public boolean equals(Object o) {
-        return this == o || (o instanceof PluginNodeStats other && Objects.equals(pluginNameToStats, other.pluginNameToStats));
+        return this == o || (o instanceof PluginNodeStats other && pluginStatistics.equals(other.pluginStatistics));
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(pluginNameToStats);
+        return Objects.hash(pluginStatistics);
+    }
+
+    @Override
+    public String toString() {
+        return "PluginNodeStats{" + "statistics=" + pluginStatistics + '}';
     }
 }

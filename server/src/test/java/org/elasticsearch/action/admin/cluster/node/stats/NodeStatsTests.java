@@ -28,6 +28,8 @@ import org.elasticsearch.cluster.service.ClusterApplierRecordingService;
 import org.elasticsearch.cluster.service.ClusterApplierRecordingService.Stats.Recording;
 import org.elasticsearch.cluster.service.ClusterStateUpdateStats;
 import org.elasticsearch.common.io.stream.BytesStreamOutput;
+import org.elasticsearch.common.io.stream.NamedWriteableAwareStreamInput;
+import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.network.HandlingTimeTracker;
 import org.elasticsearch.common.xcontent.ChunkedToXContent;
@@ -70,6 +72,7 @@ import org.elasticsearch.monitor.os.OsStats;
 import org.elasticsearch.monitor.process.ProcessStats;
 import org.elasticsearch.node.AdaptiveSelectionStats;
 import org.elasticsearch.node.ResponseCollectorService;
+import org.elasticsearch.plugins.NodeStatsPlugin;
 import org.elasticsearch.repositories.RepositoriesStats;
 import org.elasticsearch.script.ScriptCacheStats;
 import org.elasticsearch.script.ScriptContextStats;
@@ -102,11 +105,19 @@ import static org.elasticsearch.test.AbstractChunkedSerializingTestCase.assertCh
 import static org.elasticsearch.threadpool.ThreadPoolStatsTests.randomStats;
 
 public class NodeStatsTests extends ESTestCase {
+
     public void testSerialization() throws IOException {
         NodeStats nodeStats = createNodeStats();
         try (BytesStreamOutput out = new BytesStreamOutput()) {
             nodeStats.writeTo(out);
-            try (StreamInput in = out.bytes().streamInput()) {
+            try (
+                StreamInput streamInput = out.bytes().streamInput();
+                StreamInput in = new NamedWriteableAwareStreamInput(streamInput, new NamedWriteableRegistry(
+                    List.of(new NamedWriteableRegistry.Entry(
+                NodeStatsPlugin.Statistics.class,
+                TestNodeStatsPluginStats.WRITEABLE_NAME,
+                TestNodeStatsPluginStats::new
+            ))))) {
                 NodeStats deserializedNodeStats = new NodeStats(in);
                 assertEquals(nodeStats.getNode(), deserializedNodeStats.getNode());
                 assertEquals(nodeStats.getTimestamp(), deserializedNodeStats.getTimestamp());
@@ -476,6 +487,15 @@ public class NodeStatsTests extends ESTestCase {
                     .get("test-repository");
                 RepositoriesStats.SnapshotStats actualSnapshotStats = repoSnapshotStats.getRepositorySnapshotStats().get("test-repository");
                 assertEquals(XContentTestUtils.convertToMap(expectedSnapshotStats), XContentTestUtils.convertToMap(actualSnapshotStats));
+
+                var pluginNodeStats = nodeStats.getPluginStats();
+                var deserializedPluginNodeStats = deserializedNodeStats.getPluginStats();
+                if (pluginNodeStats == null) {
+                    assertNull(deserializedNodeStats);
+                } else {
+                    assertEquals(pluginNodeStats, deserializedPluginNodeStats);
+                    assertNotSame(pluginNodeStats, deserializedPluginNodeStats);
+                }
             }
         }
     }
@@ -500,7 +520,8 @@ public class NodeStatsTests extends ESTestCase {
             + chunkIfPresent(nodeStats.getDiscoveryStats()) // <br/>
             + assertExpectedChunks(nodeStats.getIngestStats(), NodeStatsTests::expectedChunks, params) // <br/>
             + chunkIfPresent(nodeStats.getAdaptiveSelectionStats()) // <br/>
-            + chunkIfPresent(nodeStats.getScriptCacheStats());
+            + chunkIfPresent(nodeStats.getScriptCacheStats())
+            + assertExpectedChunks(nodeStats.getPluginStats(), NodeStatsTests::expectedChunks, params);
     }
 
     private static int chunkIfPresent(ToXContent xcontent) {
@@ -551,6 +572,10 @@ public class NodeStatsTests extends ESTestCase {
 
     private static int expectedChunks(TransportStats transportStats) {
         return 3; // only one transport action
+    }
+
+    private static int expectedChunks(PluginNodeStats pluginNodeStats) {
+        return 1; // only one chunk
     }
 
     private static int expectedChunks(NodeIndicesStats nodeIndicesStats, NodeStatsLevel level) {
@@ -1094,6 +1119,12 @@ public class NodeStatsTests extends ESTestCase {
             randomNonNegativeLong(),
             randomNonNegativeLong()
         );
+        PluginNodeStats pluginNodeStats = null;
+        if (frequently()) {
+            pluginNodeStats = new PluginNodeStats(
+                randomMap(0, 3, () -> Tuple.tuple("name-" + randomUUID(), new TestNodeStatsPluginStats("value-" + randomAlphaOfLength(5))))
+            );
+        }
 
         return new NodeStats(
             node,
@@ -1115,7 +1146,7 @@ public class NodeStatsTests extends ESTestCase {
             indexingPressureStats,
             repositoriesStats,
             nodeAllocationStats,
-            null
+            pluginNodeStats
         );
     }
 

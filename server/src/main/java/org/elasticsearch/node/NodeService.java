@@ -20,7 +20,6 @@ import org.elasticsearch.action.search.SearchTransportService;
 import org.elasticsearch.cluster.coordination.Coordinator;
 import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.cluster.version.CompatibilityVersions;
-import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.settings.SettingsFilter;
 import org.elasticsearch.common.unit.ByteSizeValue;
@@ -44,12 +43,9 @@ import org.elasticsearch.transport.TransportService;
 
 import java.io.Closeable;
 import java.io.IOException;
-import java.util.Collections;
-import java.util.LinkedHashMap;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
-import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -116,7 +112,7 @@ public class NodeService implements Closeable {
         this.repositoriesService = repositoriesService;
         this.componentVersions = findComponentVersions(pluginService);
         this.compatibilityVersions = compatibilityVersions;
-        this.nodeStatsPlugins = getNodeStatsPlugins(pluginService);
+        this.nodeStatsPlugins = pluginService.filterPlugins(NodeStatsPlugin.class).toList();
         clusterService.addStateApplier(ingestService);
     }
 
@@ -213,7 +209,7 @@ public class NodeService implements Closeable {
             indexingPressure ? this.indexingPressure.stats() : null,
             repositoriesStats ? this.repositoriesService.getRepositoriesThrottlingStats() : null,
             null,
-            pluginStats ? getPluginStats().orElse(null) : null
+            pluginStats ? getPluginStats() : null
         );
     }
 
@@ -238,27 +234,15 @@ public class NodeService implements Closeable {
         return indicesService.awaitClose(timeout, timeUnit);
     }
 
-    private List<NodeStatsPlugin> getNodeStatsPlugins(final PluginsService pluginsService) {
-        return pluginsService.filterPlugins(NodeStatsPlugin.class).toList();
-    }
-
-    private Optional<PluginNodeStats> getPluginStats() {
-        if (nodeStatsPlugins.isEmpty()) {
-            return Optional.empty();
-        }
-
-        final Map<String, NodeStatsPlugin.Stats> pluginNameToStats = new LinkedHashMap<>();
+    private PluginNodeStats getPluginStats(final Set<String> extraMetrics) {
+        final Map<String, NodeStatsPlugin.Statistics> pluginStats = new LinkedHashMap<>();
         for (final NodeStatsPlugin plugin : nodeStatsPlugins) {
-            final String name = Objects.requireNonNull(plugin.getNodeStatsPluginName());
-            final NodeStatsPlugin.Stats stats = Objects.requireNonNull(plugin.getPluginNodeStats());
-
-            if (pluginNameToStats.containsKey(name)) {
-                throw new IllegalArgumentException(
-                    Strings.format("Duplicate node stats plugin name: %s. Plugins: %s", name, pluginNameToStats.keySet())
-                );
+            for (final var stats : plugin.getExtraNodeStats().entrySet()) {
+                if (extraMetrics.contains(stats.getKey()) && pluginStats.put(stats.getKey(), stats.getValue().get()) != null) {
+                    throw new IllegalStateException("Two stats have the same name. name=" + stats.getKey());
+                }
             }
-            pluginNameToStats.put(name, stats);
         }
-        return Optional.of(new PluginNodeStats(Collections.unmodifiableMap(pluginNameToStats)));
+        return new PluginNodeStats(pluginStats);
     }
 }

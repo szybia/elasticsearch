@@ -165,6 +165,11 @@ public class NodesStatsRequestBuilder extends NodesOperationRequestBuilder<
         return this;
     }
 
+    public NodesStatsRequestBuilder setPluginStats(boolean pluginStats) {
+        addOrRemoveMetric(pluginStats, Metric.PLUGINS);
+        return this;
+    }
+
     /**
      * Helper method for adding metrics to a request
      */

@@ -67,9 +67,11 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.SequencedMap;
 import java.util.Set;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
@@ -255,20 +257,17 @@ public class Monitoring extends Plugin implements ActionPlugin, ReloadablePlugin
     }
 
     @Override
-    public String getNodeStatsPluginName() {
-        return "monitoring";
-    }
-
-    @Override
-    public Stats getPluginNodeStats() {
-        return new MonitoringStats(Map.of("extra plugin", "example"));
+    public SequencedMap<String, Supplier<? extends Statistics>> getExtraNodeStats() {
+        final LinkedHashMap<String, Supplier<Statistics>> stats = new LinkedHashMap<>(1);
+        stats.put("monitoring", () -> new MonitoringStats(Map.of("example", "value")));
+        return Collections.unmodifiableSequencedMap(stats);
     }
 
     @Override
     public List<NamedWriteableRegistry.Entry> getNamedWriteables() {
         return List.of(
             new NamedWriteableRegistry.Entry(
-                NodeStatsPlugin.Stats.class,
+                Statistics.class,
                 MonitoringStats.WRITEABLE_NAME,
                 MonitoringStats::new
             )
@@ -276,7 +275,7 @@ public class Monitoring extends Plugin implements ActionPlugin, ReloadablePlugin
 
     }
 
-    private static class MonitoringStats implements Stats {
+    private static class MonitoringStats implements Statistics {
 
         public static final String WRITEABLE_NAME = "monitoring_stats";
 
@@ -302,7 +301,10 @@ public class Monitoring extends Plugin implements ActionPlugin, ReloadablePlugin
 
         @Override
         public XContentBuilder toXContent(XContentBuilder builder, Params params) throws IOException {
-            return builder.map(stats);
+            for (Map.Entry<String, String> entry : stats.entrySet()) {
+                builder.field(entry.getKey(), entry.getValue());
+            }
+            return builder;
         }
     }
 }

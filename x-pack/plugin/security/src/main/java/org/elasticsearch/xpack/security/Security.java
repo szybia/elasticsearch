@@ -441,6 +441,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.SequencedMap;
 import java.util.Set;
 import java.util.concurrent.Executor;
 import java.util.function.BiConsumer;
@@ -2507,25 +2508,16 @@ public class Security extends Plugin
     }
 
     @Override
-    public String getNodeStatsPluginName() {
-        return "security";
-    }
-
-    @Override
-    public Stats getPluginNodeStats() {
-        // todo(sz): can we hit node stats before we create a bitset cache/do security setup?
-        final DocumentSubsetBitsetCache cache = dlsBitsetCache.get();
-        return new SecurityNodeStatsPluginStats(cache == null ? Map.of() : cache.usageStats());
+    public SequencedMap<String, Supplier<? extends Statistics>> getExtraNodeStats() {
+        final LinkedHashMap<String, Supplier<Statistics>> extraNodeStats = new LinkedHashMap<>(1);
+        extraNodeStats.put("dls_cache", () -> new DlsCacheStatistics(dlsBitsetCache.get().usageStats()));
+        return Collections.unmodifiableSequencedMap(extraNodeStats);
     }
 
     @Override
     public List<NamedWriteableRegistry.Entry> getNamedWriteables() {
         return List.of(
-            new NamedWriteableRegistry.Entry(
-                NodeStatsPlugin.Stats.class,
-                SecurityNodeStatsPluginStats.WRITEABLE_NAME,
-                SecurityNodeStatsPluginStats::new
-            )
+            new NamedWriteableRegistry.Entry(Statistics.class, DlsCacheStatistics.WRITEABLE_NAME, DlsCacheStatistics::new)
         );
     }
 

@@ -12,15 +12,22 @@ package org.elasticsearch.plugins;
 import org.elasticsearch.common.io.stream.NamedWriteable;
 import org.elasticsearch.xcontent.ToXContent;
 
-/**
- * An extension point for {@link Plugin} implementations that wish to contribute to node stats.
- */
+import java.util.SequencedMap;
+import java.util.function.Supplier;
+
+/** An extension point for {@link Plugin} implementations that wish to contribute to node stats. */
 public interface NodeStatsPlugin {
 
-    /** Plugin name. Used for field key for stats. Must be unique across all plugins. */
-    String getNodeStatsPluginName();
+    /**
+     * Extra node stats.
+     * Key will be nested under each node in node stats response and needs to be unique across all plugins.
+     * Keys and number of keys returned should always be the same, since they're registered on startup.
+     */
+    SequencedMap<String, Supplier<? extends Statistics>> getExtraNodeStats();
 
-    Stats getPluginNodeStats();
-
-    interface Stats extends ToXContent, NamedWriteable {}
+    /**
+     * Extra statistics.
+     * Can be of any serializable format. No restrictions. But do consider the amount of data returned.
+     */
+    interface Statistics extends ToXContent, NamedWriteable {}
 }
