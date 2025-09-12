@@ -18,6 +18,7 @@ import org.elasticsearch.common.io.stream.Writeable;
 import java.io.IOException;
 import java.util.Collections;
 import java.util.EnumSet;
+import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
 
@@ -30,10 +31,12 @@ import static java.util.stream.Collectors.toUnmodifiableSet;
 public class NodesStatsRequestParameters implements Writeable {
     private CommonStatsFlags indices = new CommonStatsFlags();
     private final EnumSet<Metric> requestedMetrics;
+    private final Set<String> extraRequestedMetrics;
     private boolean includeShardsStats = true;
 
     public NodesStatsRequestParameters() {
         this.requestedMetrics = EnumSet.noneOf(Metric.class);
+        this.extraRequestedMetrics = new LinkedHashSet<>();
     }
 
     public NodesStatsRequestParameters(StreamInput in) throws IOException {
@@ -44,6 +47,8 @@ public class NodesStatsRequestParameters implements Writeable {
         } else {
             includeShardsStats = true;
         }
+        //todo(sz): handle transport
+        extraRequestedMetrics = in.readCollectionAsImmutableSet(StreamInput::readString);
     }
 
     @Override
@@ -53,6 +58,8 @@ public class NodesStatsRequestParameters implements Writeable {
         if (out.getTransportVersion().onOrAfter(TransportVersions.V_8_12_0)) {
             out.writeBoolean(includeShardsStats);
         }
+        //todo(sz): handle transport
+        out.writeStringCollection(extraRequestedMetrics);;
     }
 
     public CommonStatsFlags indices() {
@@ -65,6 +72,10 @@ public class NodesStatsRequestParameters implements Writeable {
 
     public EnumSet<Metric> requestedMetrics() {
         return requestedMetrics;
+    }
+
+    public Set<String> extraRequestedMetrics() {
+        return extraRequestedMetrics;
     }
 
     public boolean includeShardsStats() {

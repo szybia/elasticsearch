@@ -249,6 +249,7 @@ import org.elasticsearch.persistent.StartPersistentTaskAction;
 import org.elasticsearch.persistent.UpdatePersistentTaskStatusAction;
 import org.elasticsearch.plugins.ActionPlugin;
 import org.elasticsearch.plugins.ActionPlugin.ActionHandler;
+import org.elasticsearch.plugins.NodeStatsPlugin;
 import org.elasticsearch.plugins.interceptor.RestServerActionPlugin;
 import org.elasticsearch.plugins.internal.RestExtension;
 import org.elasticsearch.repositories.VerifyNodeRepositoryAction;
@@ -413,6 +414,7 @@ import org.elasticsearch.usage.UsageService;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -459,6 +461,7 @@ public class ActionModule extends AbstractModule {
     private final RequestValidators<IndicesAliasesRequest> indicesAliasesRequestRequestValidators;
     private final ReservedClusterStateService reservedClusterStateService;
     private final RestExtension restExtension;
+    private final Set<String> extraPluginNodeStats;
 
     public ActionModule(
         Settings settings,
@@ -480,7 +483,8 @@ public class ActionModule extends AbstractModule {
         List<ReservedProjectStateHandler<?>> reservedProjectStateHandlers,
         RestExtension restExtension,
         IncrementalBulkService bulkService,
-        ProjectIdResolver projectIdResolver
+        ProjectIdResolver projectIdResolver,
+        List<NodeStatsPlugin> nodeStatsPlugins
     ) {
         this.settings = settings;
         this.indexNameExpressionResolver = indexNameExpressionResolver;
@@ -534,6 +538,14 @@ public class ActionModule extends AbstractModule {
             reservedProjectStateHandlers
         );
         this.restExtension = restExtension;
+
+        final Set<String> extraPluginNodeStats = new HashSet<>();
+        nodeStatsPlugins.stream().map(p -> p.getExtraNodeStats().keySet()).flatMap(Set::stream).forEach(statName -> {
+            if (extraPluginNodeStats.add(statName) == false) {
+                throw new IllegalStateException("Cannot register duplicate node stat [" + statName + "]");
+            }
+        });
+        this.extraPluginNodeStats = Set.copyOf(extraPluginNodeStats);
     }
 
     private static <T> T getRestServerComponent(
@@ -850,7 +862,7 @@ public class ActionModule extends AbstractModule {
         registerHandler.accept(new RestNodesInfoAction(settingsFilter));
         registerHandler.accept(new RestRemoteClusterInfoAction());
         registerHandler.accept(new RestNodesCapabilitiesAction());
-        registerHandler.accept(new RestNodesStatsAction(projectIdResolver));
+        registerHandler.accept(new RestNodesStatsAction(projectIdResolver, extraPluginNodeStats));
         registerHandler.accept(new RestNodesUsageAction());
         registerHandler.accept(new RestNodesHotThreadsAction());
         registerHandler.accept(new RestClusterAllocationExplainAction());

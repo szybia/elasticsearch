@@ -45,6 +45,7 @@ public class RestNodesStatsAction extends BaseRestHandler {
     private static final Set<String> SUPPORTED_CAPABILITIES = Set.of("dense_vector_off_heap_stats");
 
     private final ProjectIdResolver projectIdResolver;
+    private final Set<String> extraAllowedMetrics;
 
     @Override
     public List<Route> routes() {
@@ -68,8 +69,10 @@ public class RestNodesStatsAction extends BaseRestHandler {
         FLAGS = Collections.unmodifiableMap(flags);
     }
 
-    public RestNodesStatsAction(ProjectIdResolver projectIdResolver) {
+    public RestNodesStatsAction(ProjectIdResolver projectIdResolver,
+                                Set<String> extraAllowedMetrics) {
         this.projectIdResolver = projectIdResolver;
+        this.extraAllowedMetrics = Set.copyOf(extraAllowedMetrics);
     }
 
     @Override
@@ -103,7 +106,7 @@ public class RestNodesStatsAction extends BaseRestHandler {
                     )
                 );
             }
-            nodesStatsRequest.all();
+            nodesStatsRequest.all(extraAllowedMetrics);
             nodesStatsRequest.indices(CommonStatsFlags.ALL);
         } else if (metricNames.contains("_all")) {
             throw new IllegalArgumentException(
@@ -122,6 +125,8 @@ public class RestNodesStatsAction extends BaseRestHandler {
             for (final String metricName : metricNames) {
                 if (Metric.isValid(metricName)) {
                     nodesStatsRequest.addMetric(Metric.get(metricName));
+                } else if (extraAllowedMetrics.contains(metricName)) {
+                    nodesStatsRequest.addExtraMetric(metricName);
                 } else {
                     if (metricName.equals("indices")) continue; // indices metric has different implications, see below
                     invalidMetrics.add(metricName);

@@ -57,7 +57,7 @@ public class NodesStatsRequestTests extends ESTestCase {
      */
     public void testRemoveSingleMetric() throws Exception {
         NodesStatsRequest request = new NodesStatsRequest();
-        request.all();
+        request.all(Set.of());
         Metric metric = randomFrom(Metric.ALL);
         request.removeMetric(metric);
         NodesStatsRequest deserializedRequest = roundTripRequest(request);
@@ -78,11 +78,11 @@ public class NodesStatsRequestTests extends ESTestCase {
     }
 
     /**
-     * Test that the {@link NodesStatsRequest#all()} method enables all metrics.
+     * Test that the {@link NodesStatsRequest#all(Set)} )} method enables all metrics.
      */
     public void testNodesInfoRequestAll() throws Exception {
         NodesStatsRequest request = new NodesStatsRequest("node");
-        request.all();
+        request.all(Set.of());
 
         assertThat(request.indices().getFlags(), equalTo(CommonStatsFlags.ALL.getFlags()));
         assertThat(request.requestedMetrics(), equalTo(Metric.ALL));

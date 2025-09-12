@@ -115,7 +115,7 @@ public class DiskHealthTrackerTests extends ESTestCase {
                 eq(false),
                 eq(false),
                 eq(false),
-                eq(false)
+                eq(Set.of())
             )
         ).thenReturn(nodeStats());
         DiskHealthInfo diskHealth = diskHealthTracker.determineCurrentHealth();
@@ -247,7 +247,7 @@ public class DiskHealthTrackerTests extends ESTestCase {
                 eq(false),
                 eq(false),
                 eq(false),
-                eq(false)
+                eq(Set.of())
             )
         ).thenReturn(nodeStats(1000, 10));
     }
@@ -272,7 +272,7 @@ public class DiskHealthTrackerTests extends ESTestCase {
                 eq(false),
                 eq(false),
                 eq(false),
-                eq(false)
+                eq(Set.of())
             )
         ).thenReturn(nodeStats(1000, 80));
     }
@@ -297,7 +297,7 @@ public class DiskHealthTrackerTests extends ESTestCase {
                 eq(false),
                 eq(false),
                 eq(false),
-                eq(false)
+                eq(Set.of())
             )
         ).thenReturn(nodeStats(1000, 110));
     }

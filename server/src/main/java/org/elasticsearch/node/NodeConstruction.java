@@ -168,6 +168,7 @@ import org.elasticsearch.plugins.IngestPlugin;
 import org.elasticsearch.plugins.MapperPlugin;
 import org.elasticsearch.plugins.MetadataUpgrader;
 import org.elasticsearch.plugins.NetworkPlugin;
+import org.elasticsearch.plugins.NodeStatsPlugin;
 import org.elasticsearch.plugins.PersistentTaskPlugin;
 import org.elasticsearch.plugins.Plugin;
 import org.elasticsearch.plugins.PluginsLoader;
@@ -1065,7 +1066,8 @@ class NodeConstruction {
             ),
             pluginsService.loadSingletonServiceProvider(RestExtension.class, RestExtension::allowAll),
             incrementalBulkService,
-            projectResolver
+            projectResolver,
+            pluginsService.filterPlugins(NodeStatsPlugin.class).toList()
         );
         modules.add(actionModule);
 

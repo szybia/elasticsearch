@@ -157,6 +157,7 @@ public class TransportNodesStatsAction extends TransportNodesAction<
 
         final var nodesStatsRequestParameters = request.getNodesStatsRequestParameters();
         final var metrics = nodesStatsRequestParameters.requestedMetrics();
+        final var extraMetrics = nodesStatsRequestParameters.extraRequestedMetrics();
 
         return nodeService.stats(
             nodesStatsRequestParameters.indices(),

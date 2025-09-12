@@ -50,9 +50,10 @@ public class NodesStatsRequest extends BaseNodesRequest {
     /**
      * Sets all the request flags.
      */
-    public NodesStatsRequest all() {
+    public NodesStatsRequest all(Set<String> extraAllowedMetrics) {
         this.nodesStatsRequestParameters.indices().all();
         this.nodesStatsRequestParameters.requestedMetrics().addAll(Metric.ALL);
+        this.nodesStatsRequestParameters.extraRequestedMetrics().addAll(extraAllowedMetrics);
         return this;
     }
 
@@ -110,6 +111,11 @@ public class NodesStatsRequest extends BaseNodesRequest {
      */
     public NodesStatsRequest addMetric(Metric metric) {
         nodesStatsRequestParameters.requestedMetrics().add(metric);
+        return this;
+    }
+
+    public NodesStatsRequest addExtraMetric(String metric) {
+        nodesStatsRequestParameters.extraRequestedMetrics().add(metric);
         return this;
     }
 

@@ -763,7 +763,7 @@ public class NodeMetrics extends AbstractLifecycleComponent {
             false,
             true,
             false,
-            false
+            Set.of()
         );
     }
 

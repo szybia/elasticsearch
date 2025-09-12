@@ -14,6 +14,8 @@ import org.elasticsearch.action.admin.indices.stats.CommonStatsFlags;
 import org.elasticsearch.action.support.nodes.NodesOperationRequestBuilder;
 import org.elasticsearch.client.internal.ElasticsearchClient;
 
+import java.util.Set;
+
 public class NodesStatsRequestBuilder extends NodesOperationRequestBuilder<
     NodesStatsRequest,
     NodesStatsResponse,
@@ -26,8 +28,8 @@ public class NodesStatsRequestBuilder extends NodesOperationRequestBuilder<
     /**
      * Sets all the request flags.
      */
-    public NodesStatsRequestBuilder all() {
-        request.all();
+    public NodesStatsRequestBuilder all(Set<String> extraAllowedMetrics) {
+        request.all(extraAllowedMetrics);
         return this;
     }
 
@@ -162,11 +164,6 @@ public class NodesStatsRequestBuilder extends NodesOperationRequestBuilder<
 
     public NodesStatsRequestBuilder setAllocationStats(boolean allocationStats) {
         addOrRemoveMetric(allocationStats, Metric.ALLOCATIONS);
-        return this;
-    }
-
-    public NodesStatsRequestBuilder setPluginStats(boolean pluginStats) {
-        addOrRemoveMetric(pluginStats, Metric.PLUGINS);
         return this;
     }
 

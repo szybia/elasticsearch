@@ -43,9 +43,10 @@ import org.elasticsearch.transport.TransportService;
 
 import java.io.Closeable;
 import java.io.IOException;
-import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -185,7 +186,7 @@ public class NodeService implements Closeable {
         boolean scriptCache,
         boolean indexingPressure,
         boolean repositoriesStats,
-        boolean pluginStats
+        Set<String> extraMetrics
     ) {
         // for indices stats we want to include previous allocated shards stats as well (it will
         // only be applied to the sensible ones to use, like refresh/merge/flush/indexing stats)
@@ -209,7 +210,7 @@ public class NodeService implements Closeable {
             indexingPressure ? this.indexingPressure.stats() : null,
             repositoriesStats ? this.repositoriesService.getRepositoriesThrottlingStats() : null,
             null,
-            pluginStats ? getPluginStats() : null
+            extraMetrics.isEmpty() ? null : getPluginStats(extraMetrics)
         );
     }
 
