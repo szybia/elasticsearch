@@ -43,6 +43,7 @@ import org.elasticsearch.cluster.coordination.StableMasterHealthIndicatorService
 import org.elasticsearch.cluster.metadata.DataStreamFailureStoreSettings;
 import org.elasticsearch.cluster.metadata.DataStreamGlobalRetentionSettings;
 import org.elasticsearch.cluster.metadata.IndexMetadataVerifier;
+import org.elasticsearch.cluster.metadata.IndexSettingsAppliedListener;
 import org.elasticsearch.cluster.metadata.IndexNameExpressionResolver;
 import org.elasticsearch.cluster.metadata.Metadata;
 import org.elasticsearch.cluster.metadata.MetadataCreateDataStreamService;
@@ -1062,6 +1063,15 @@ class NodeConstruction {
             // Return both
             return Stream.of(componentObjects, componentsFromInjector).flatMap(Collection::stream).toList();
         }).toList();
+
+        // Install index settings applied listeners once, after components are created
+        {
+            List<IndexSettingsAppliedListener> listeners = pluginComponents.stream()
+                .filter(c -> c instanceof IndexSettingsAppliedListener)
+                .map(c -> (IndexSettingsAppliedListener) c)
+                .toList();
+            metadataUpdateSettingsService.installIndexSettingsAppliedListeners(listeners);
+        }
 
         var terminationHandlers = pluginsService.loadServiceProviders(TerminationHandlerProvider.class)
             .stream()

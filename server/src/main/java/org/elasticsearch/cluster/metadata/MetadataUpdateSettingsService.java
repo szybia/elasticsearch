@@ -45,12 +45,16 @@ import org.elasticsearch.indices.ShardLimitValidator;
 import org.elasticsearch.threadpool.ThreadPool;
 
 import java.io.IOException;
+import java.util.List;
+import java.util.ArrayList;
+import java.util.Map;
+import java.util.HashMap;
 import java.util.Arrays;
 import java.util.HashSet;
-import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiFunction;
 import java.util.function.Function;
 
@@ -68,6 +72,8 @@ public class MetadataUpdateSettingsService {
     private final IndicesService indicesService;
     private final ShardLimitValidator shardLimitValidator;
     private final MasterServiceTaskQueue<UpdateSettingsTask> taskQueue;
+    // One-time installed listeners; immutable after installation
+    private final AtomicReference<List<IndexSettingsAppliedListener>> indexSettingsAppliedListeners = new AtomicReference<>();
 
     public MetadataUpdateSettingsService(
         ClusterService clusterService,
@@ -106,6 +112,16 @@ public class MetadataUpdateSettingsService {
             }
             return state;
         });
+    }
+
+    /**
+     * Install listeners exactly once. Subsequent calls will throw.
+     */
+    public void installIndexSettingsAppliedListeners(final List<IndexSettingsAppliedListener> listeners) {
+        if (listenersInstalled.compareAndSet(false, true) == false) {
+            throw new IllegalStateException("IndexSettingsAppliedListeners already installed");
+        }
+        this.indexSettingsAppliedListeners = List.copyOf(listeners);
     }
 
     private final class UpdateSettingsTask implements ClusterStateTaskListener {
@@ -333,6 +349,33 @@ public class MetadataUpdateSettingsService {
                     final IndexMetadata.Builder builder = IndexMetadata.builder(metadataBuilder.get(index));
                     builder.settingsVersion(1 + builder.settingsVersion());
                     metadataBuilder.put(builder);
+                }
+            }
+
+            // Detect lifecycle policy name changes and notify listeners (batched by new policy name)
+            if (indexSettingsAppliedListeners.isEmpty() == false) {
+                final Map<String, List<String>> indicesByNewPolicy = new HashMap<>();
+                for (final String indexName : actualIndices) {
+                    final String prevPolicy = currentProject.index(indexName).getLifecyclePolicyName();
+                    final String newPolicy = metadataBuilder.get(indexName).getLifecyclePolicyName();
+                    if (newPolicy != null && Objects.equals(prevPolicy, newPolicy) == false) {
+                        indicesByNewPolicy.computeIfAbsent(newPolicy, k -> new ArrayList<>()).add(indexName);
+                    }
+                }
+                if (indicesByNewPolicy.isEmpty() == false) {
+                    for (Map.Entry<String, List<String>> entry : indicesByNewPolicy.entrySet()) {
+                        final String newPolicy = entry.getKey();
+                        final List<String> indices = entry.getValue();
+                        for (IndexSettingsAppliedListener listener : indexSettingsAppliedListeners) {
+                            try {
+                                if (listener.onLifecycleNameChanged(request.projectId(), currentProject, metadataBuilder, indices, newPolicy)) {
+                                    changed = true;
+                                }
+                            } catch (Exception e) {
+                                logger.warn("IndexSettingsAppliedListener.onLifecycleNameChanged failed", e);
+                            }
+                        }
+                    }
                 }
             }
 

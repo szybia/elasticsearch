@@ -1,0 +1,87 @@
+---
+teardown:
+  - do:
+      indices.delete_data_stream:
+        name: logs-bar-baz2
+
+---
+"ILM explain reflects updated policy and phase definition on data stream write index":
+#  - requires:
+#      cluster_features: [ "logs_stream" ]
+#      reason: requires data stream features to manage data stream settings
+#      test_runner_features: allowed_warnings
+  - do:
+      index:
+        index: logs-bar-baz2
+        body:
+          message: one
+
+  - do:
+      indices.get_data_stream:
+        name: logs-bar-baz2
+  - set: { data_streams.0.indices.0.index_name: write_index }
+
+  - do:
+      indices.get:
+        index: logs-bar-baz2
+
+  # default "logs" with 30d / 50GB
+  - match: { .$write_index.settings.index.lifecycle.name: logs }
+
+  - do:
+      ilm.put_lifecycle:
+        policy: new_policy
+        body: |
+          {
+            "policy": {
+              "phases": {
+                "hot": {
+                  "actions": {
+                    "rollover": {
+                      "max_docs": 2
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+  - do:
+      indices.put_data_stream_settings:
+        name: logs-bar-baz2
+        body:
+          index:
+            lifecycle:
+              name: new_policy
+
+  # do a few actions to essentially wait until the update does all the work behind the scenes
+  # - do:
+  #     indices.get:
+  #       index: logs-bar-baz2
+  # - do:
+  #     indices.get:
+  #       index: logs-bar-baz2
+  # - do:
+  #     indices.get:
+  #       index: logs-bar-baz2
+  # - do:
+  #     indices.get:
+  #       index: logs-bar-baz2
+  # - do:
+  #     indices.get:
+  #       index: logs-bar-baz2
+
+  - do:
+      indices.get:
+        index: logs-bar-baz2
+  - match: { .$write_index.settings.index.lifecycle.name: new_policy }
+
+  - do:
+      ilm.explain_lifecycle:
+        index: logs-bar-baz2
+
+  - match: { indices.$write_index.managed: true }
+  - match: { indices.$write_index.policy: new_policy }
+  - match: { indices.$write_index.phase_execution.policy: new_policy }
+  - match: { indices.$write_index.phase_execution.phase_definition.actions.rollover.max_docs: 2 }
+
