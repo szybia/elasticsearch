@@ -52,7 +52,7 @@ public class FeatureData {
 
             for (NodeFeature f : specFeatures) {
                 FeatureSpecification existing = allFeatures.putIfAbsent(f.id(), spec);
-                if (existing != null && existing.getClass().getCanonicalName().equals(spec.getClass().getCanonicalName()) == false) {
+                if (existing != null && existing.getClass() != spec.getClass()) {
                     throw new IllegalArgumentException(
                         Strings.format("Duplicate feature - [%s] is declared by both [%s] and [%s]", f.id(), existing, spec)
                     );

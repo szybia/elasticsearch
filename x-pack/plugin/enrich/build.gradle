@@ -7,7 +7,7 @@ esplugin {
   name = 'x-pack-enrich'
   description = 'Elasticsearch Expanded Pack Plugin - Enrich'
   classname = 'org.elasticsearch.xpack.enrich.EnrichPlugin'
-  extendedPlugins = ['x-pack-core']
+  extendedPlugins = ['x-pack-core', 'reindex']
 }
 base {
   archivesName = 'x-pack-enrich'
@@ -15,7 +15,7 @@ base {
 
 dependencies {
   compileOnly project(path: xpackModule('core'))
-  api project(path: ':modules:reindex')
+  compileOnly project(path: ':modules:reindex')
   testImplementation(testArtifact(project(xpackModule('core'))))
   testImplementation project(path: ':modules:ingest-common')
   testImplementation project(path: ':modules:lang-mustache')
