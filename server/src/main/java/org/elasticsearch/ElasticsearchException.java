@@ -71,6 +71,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -2186,4 +2187,21 @@ public class ElasticsearchException extends RuntimeException implements ToXConte
         return sb.toString();
     }
 
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) {
+            return true;
+        }
+        if (o instanceof ElasticsearchException that) {
+            return Objects.equals(metadata, that.metadata)
+                && Objects.equals(bodyHeaders, that.bodyHeaders)
+                && Objects.equals(httpHeaders, that.httpHeaders);
+        }
+        return false;
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(metadata, bodyHeaders, httpHeaders);
+    }
 }

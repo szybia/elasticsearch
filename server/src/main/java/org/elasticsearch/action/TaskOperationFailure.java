@@ -22,6 +22,7 @@ import org.elasticsearch.xcontent.XContentBuilder;
 import org.elasticsearch.xcontent.XContentParser;
 
 import java.io.IOException;
+import java.util.Objects;
 
 import static org.elasticsearch.xcontent.ConstructingObjectParser.constructorArg;
 
@@ -125,4 +126,24 @@ public final class TaskOperationFailure implements Writeable, ToXContentFragment
         return builder;
 
     }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) {
+            return true;
+        }
+        if (o instanceof TaskOperationFailure that) {
+            return taskId == that.taskId
+                && status == that.status
+                && Objects.equals(nodeId, that.nodeId)
+                && Objects.equals(reason, that.reason);
+        }
+        return false;
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(nodeId, taskId, reason, status);
+    }
+
 }

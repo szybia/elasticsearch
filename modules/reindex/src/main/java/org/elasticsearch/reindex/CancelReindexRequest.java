@@ -70,4 +70,21 @@ public class CancelReindexRequest extends BaseTasksRequest<CancelReindexRequest>
     public boolean match(Task task) {
         throw new UnsupportedOperationException("shouldn't be called. transport overrides function which does.");
     }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) {
+            return true;
+        }
+        if (o == null || getClass() != o.getClass()) {
+            return false;
+        }
+        final CancelReindexRequest that = (CancelReindexRequest) o;
+        return waitForCompletion == that.waitForCompletion && Objects.equals(projectId, that.projectId) && super.equals(that);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(projectId, waitForCompletion, super.hashCode());
+    }
 }

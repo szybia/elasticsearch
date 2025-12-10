@@ -16,6 +16,7 @@ import org.elasticsearch.tasks.TaskId;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.util.Objects;
 
 public abstract class AbstractTransportRequest extends TransportMessage implements TransportRequest {
     @Nullable // set by the transport service on inbound messages; unset on outbound messages
@@ -85,5 +86,24 @@ public abstract class AbstractTransportRequest extends TransportMessage implemen
     @Override
     public String toString() {
         return getClass().getName() + "/" + getParentTask();
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) {
+            return true;
+        }
+        if (o == null || getClass() != o.getClass()) {
+            return false;
+        }
+        final AbstractTransportRequest that = (AbstractTransportRequest) o;
+        return requestId == that.requestId
+            && Objects.equals(remoteAddress, that.remoteAddress)
+            && Objects.equals(parentTaskId, that.parentTaskId);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(remoteAddress, parentTaskId, requestId);
     }
 }

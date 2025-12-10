@@ -21,6 +21,8 @@ import org.elasticsearch.tasks.Task;
 import org.elasticsearch.tasks.TaskId;
 
 import java.io.IOException;
+import java.util.Arrays;
+import java.util.Objects;
 
 import static org.elasticsearch.action.ValidateActions.addValidationError;
 
@@ -187,4 +189,26 @@ public class BaseTasksRequest<Request extends BaseTasksRequest<Request>> extends
         }
         return true;
     }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) {
+            return true;
+        }
+        if (o instanceof BaseTasksRequest<?> that) {
+            return Arrays.deepEquals(nodes, that.nodes)
+                && Objects.equals(timeout, that.timeout)
+                && Objects.deepEquals(actions, that.actions)
+                && Objects.equals(targetParentTaskId, that.targetParentTaskId)
+                && Objects.equals(targetTaskId, that.targetTaskId)
+                && super.equals(that);
+        }
+        return false;
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(Arrays.hashCode(nodes), timeout, Arrays.hashCode(actions), targetParentTaskId, targetTaskId);
+    }
+
 }
