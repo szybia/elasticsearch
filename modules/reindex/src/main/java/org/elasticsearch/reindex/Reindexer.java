@@ -20,6 +20,7 @@ import org.apache.http.message.BasicHeader;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.elasticsearch.action.ActionListener;
+import org.elasticsearch.action.ActionListenerResponseHandler;
 import org.elasticsearch.action.DocWriteRequest;
 import org.elasticsearch.action.bulk.BulkItemResponse;
 import org.elasticsearch.action.index.IndexRequest;
@@ -33,6 +34,7 @@ import org.elasticsearch.cluster.ProjectState;
 import org.elasticsearch.cluster.metadata.IndexMetadata;
 import org.elasticsearch.cluster.metadata.MetadataIndexTemplateService;
 import org.elasticsearch.cluster.metadata.ProjectMetadata;
+import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.project.ProjectResolver;
 import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.common.BackoffPolicy;
@@ -62,6 +64,7 @@ import org.elasticsearch.script.ScriptService;
 import org.elasticsearch.tasks.CancellableTask;
 import org.elasticsearch.tasks.TaskManager;
 import org.elasticsearch.threadpool.ThreadPool;
+import org.elasticsearch.transport.TransportService;
 import org.elasticsearch.xcontent.XContentBuilder;
 import org.elasticsearch.xcontent.XContentParser;
 import org.elasticsearch.xcontent.XContentParserConfiguration;
@@ -97,6 +100,7 @@ public class Reindexer {
     private final ReindexSslConfig reindexSslConfig;
     private final ReindexMetrics reindexMetrics;
     private final TaskManager taskManager;
+    private final TransportService transportService;
     @Nullable
     private final ReindexRelocationNodePicker relocationNodePicker;
 
@@ -109,6 +113,7 @@ public class Reindexer {
         ReindexSslConfig reindexSslConfig,
         @Nullable ReindexMetrics reindexMetrics,
         TaskManager taskManager,
+        TransportService transportService,
         @Nullable ReindexRelocationNodePicker relocationNodePicker
     ) {
         this.clusterService = clusterService;
@@ -119,6 +124,7 @@ public class Reindexer {
         this.reindexSslConfig = reindexSslConfig;
         this.reindexMetrics = reindexMetrics;
         this.taskManager = Objects.requireNonNull(taskManager);
+        this.transportService = Objects.requireNonNull(transportService);
         this.relocationNodePicker = relocationNodePicker;
     }
 
@@ -134,7 +140,7 @@ public class Reindexer {
         // todo(szy/sam): correct the startTime sent over for relocation
         long startTime = System.nanoTime();
 
-        final ActionListener<BulkByScrollResponse> listenerWithRelocations = listenerWithRelocations(task, listener);
+        final ActionListener<BulkByScrollResponse> listenerWithRelocations = listenerWithRelocations(task, request, listener);
 
         BulkByScrollParallelizationHelper.executeSlicedAction(
             task,
@@ -177,7 +183,12 @@ public class Reindexer {
             return wrapWithMetrics(potentiallyWrappedRelocationListener, reindexMetrics, startTime, isRemote);
         }
 
-        final ActionListener<BulkByScrollResponse> metricListener = wrapWithMetrics(potentiallyWrappedRelocationListener, reindexMetrics, startTime, isRemote);
+        final ActionListener<BulkByScrollResponse> metricListener = wrapWithMetrics(
+            potentiallyWrappedRelocationListener,
+            reindexMetrics,
+            startTime,
+            isRemote
+        );
 
         return metricListener.delegateFailure((l, resp) -> {
             // note: implicitly relies on TaskResumeInfo only being populated if a suitable node exists for relocating to.
@@ -245,6 +256,7 @@ public class Reindexer {
     /** Wraps the listener with relocation handling (if applicable). Visible for testing. */
     ActionListener<BulkByScrollResponse> listenerWithRelocations(
         final BulkByScrollTask task,
+        final ReindexRequest request,
         final ActionListener<BulkByScrollResponse> listener
     ) {
         if (ReindexPlugin.REINDEX_RESILIENCE_ENABLED == false || relocationNodePicker == null) {
@@ -264,8 +276,30 @@ public class Reindexer {
                 : task.getWorkerState().getNodeToRelocateToSupplier();
             final String nodeToRelocateTo = nodeToRelocateToSupplier.get().orElse(null);
             assert nodeToRelocateTo != null : "node to relocate to should be set if taskResumeInfo is present";
-            // todo(szy): add relocations
-            l.onFailure(new UnsupportedOperationException("todo: implement relocation action"));
+            final DiscoveryNode nodeToRelocateToNode = clusterService.state().nodes().get(nodeToRelocateTo);
+            if (nodeToRelocateToNode == null) {
+                l.onFailure(
+                    new IllegalStateException(
+                        Strings.format("Node %s to relocate to left cluster before relocation", nodeToRelocateTo)
+                    )
+                );
+                return;
+            }
+            request.setResumeInfo(response.getTaskResumeInfo().get());
+            final ActionListener<BulkByScrollResponse> relocationListener = ActionListener.wrap(
+                ignored -> l.onFailure(new IllegalStateException("Task was relocated")),
+                l::onFailure
+            );
+            transportService.sendRequest(
+                nodeToRelocateToNode,
+                ReindexAction.NAME,
+                request,
+                new ActionListenerResponseHandler<>(
+                    relocationListener,
+                    BulkByScrollResponse::new,
+                    threadPool.executor(ThreadPool.Names.GENERIC)
+                )
+            );
         });
     }
 
