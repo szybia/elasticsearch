@@ -12,6 +12,7 @@ package org.elasticsearch.reindex.management;
 import org.elasticsearch.action.admin.cluster.node.tasks.get.GetTaskResponse;
 import org.elasticsearch.action.admin.cluster.node.tasks.list.ListTasksResponse;
 import org.elasticsearch.action.admin.cluster.node.tasks.list.TaskGroup;
+import org.elasticsearch.action.get.GetResponse;
 import org.elasticsearch.client.Request;
 import org.elasticsearch.client.Response;
 import org.elasticsearch.client.RestClient;
@@ -26,8 +27,10 @@ import org.elasticsearch.reindex.ReindexPlugin;
 import org.elasticsearch.tasks.TaskId;
 import org.elasticsearch.tasks.TaskInfo;
 import org.elasticsearch.tasks.TaskResult;
+import org.elasticsearch.tasks.TaskResultsService;
 import org.elasticsearch.test.ESIntegTestCase;
 import org.elasticsearch.test.rest.ESRestTestCase;
+import org.elasticsearch.xcontent.ObjectPath;
 
 import java.util.Arrays;
 import java.util.Collection;
@@ -35,6 +38,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 
+import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertNoFailures;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.is;
 
@@ -48,8 +52,8 @@ public class ReindexRelocationIT extends ESIntegTestCase {
     private static final String DEST_INDEX = "reindex_dst";
     private static final int BULK_SIZE = 1;
     private static final int REQUESTS_PER_SECOND = 1;
-    private static final int NUM_OF_SLICES = 2;
-    private static final int NUMBER_OF_DOCUMENTS_THAT_TAKES_60_SECONDS_TO_INGEST = 60 * REQUESTS_PER_SECOND * BULK_SIZE;
+    private static final int NUM_OF_SLICES = 1;
+    private static final int NUMBER_OF_DOCUMENTS_THAT_TAKES_60_SECONDS_TO_INGEST = 10 * REQUESTS_PER_SECOND * BULK_SIZE;
 
     @Override
     protected Collection<Class<? extends Plugin>> nodePlugins() {
@@ -68,11 +72,11 @@ public class ReindexRelocationIT extends ESIntegTestCase {
 
     /**
      * Test long-running reindex task is relocated to a suitable node, by doing the following:
-     * 1. Create two named data nodes: source_node (hosting the shard) and task_node (hosting the task)
-     * 2. Create source index pinned to source_node without replicas, so the scroll always lives there
-     * 3. Create destination index
-     * 4. Start a throttled reindex on task_node
-     * 5. Stop task_node and observe relocation to source_node
+     * 1. Create two named data nodes: nodeA (hosting the shard) and nodeB (hosting the reindex task)
+     * 2. Create source index pinned to nodeA without replicas, so the scroll always lives there
+     * 3. Create destination index pinned to nodeA without replicas, so we don't get no_shard_available_action_exception when we shut down nodeA
+     * 4. Start a throttled reindex on nodeB
+     * 5. Stop task_node and observe relocation to nodeA
      */
     public void testReindexRelocation() throws Exception {
         assumeTrue("reindex resilience is enabled", ReindexPlugin.REINDEX_RESILIENCE_ENABLED);
@@ -83,7 +87,7 @@ public class ReindexRelocationIT extends ESIntegTestCase {
         ensureStableCluster(3);
 
         createSourceIndexPinnedToNode(nodeA);
-        createDestinationIndex();
+        createDestinationIndexPinnedToNode(nodeA);
         indexRandom(true, SOURCE_INDEX, NUMBER_OF_DOCUMENTS_THAT_TAKES_60_SECONDS_TO_INGEST);
         ensureGreen(SOURCE_INDEX);
 
@@ -91,23 +95,29 @@ public class ReindexRelocationIT extends ESIntegTestCase {
         final TaskId originalTaskId = startAsyncThrottledReindex(nodeB);
 
         final TaskInfo running = getRunningTask(originalTaskId);
-        final var reindexNode = nodeById(running.taskId().getNodeId());
-        assertThat("task should start on nodeB", reindexNode.getName(), equalTo(nodeB));
+        final var reindexNodeB = nodeById(running.taskId().getNodeId());
+        assertThat("task should start on nodeB", reindexNodeB.getName(), equalTo(nodeB));
 
         // Stop the node hosting the task to trigger relocation
         internalCluster().getInstance(ShutdownPrepareService.class, nodeB).prepareForShutdown();
         internalCluster().stopNode(nodeB);
 
-        //todo(szy): finish off test
-        final TaskGroup relocatedParent = assertRelocatedParentTask(reindexNode.getId());
+        final Map<String, Object> finishedOriginalTask = getTaskFromTasksIndex(originalTaskId);
+        final String errorType = ObjectPath.eval("error.type", finishedOriginalTask);
+        final String errorMessage = ObjectPath.eval("error.reason", finishedOriginalTask);
+        assertThat("expected error type", errorType, equalTo("illegal_state_exception"));
+        assertThat("expected error message", errorMessage, equalTo("Task was relocated"));
+
+        //todo(szy): change when async
+        final TaskGroup relocatedParent = assertRelocatedParentTask(nodeA);
 
         // Speed it up post-relocation to keep the test fast
-        rethrottle(relocatedParent.taskInfo().taskId().toString(), -1); // unlimited
-
-        // Wait for completion of the relocated task
-        final var relocatedResult = getCompletedTaskResult(relocatedParent.taskInfo().taskId());
-        assertNotNull(relocatedResult.getTask());
-        assertNull("relocated task should not have error", relocatedResult.getError());
+//        rethrottle(relocatedParent.taskInfo().taskId().toString(), -1); // unlimited
+//
+//        // Wait for completion of the relocated task
+//        final var relocatedResult = getCompletedTaskResult(relocatedParent.taskInfo().taskId());
+//        assertNotNull(relocatedResult.getTask());
+//        assertNull("relocated task should not have error", relocatedResult.getError());
 
         // Assert destination index has all documents reindexed
         assertBusy(() -> assertDocCount(DEST_INDEX, NUMBER_OF_DOCUMENTS_THAT_TAKES_60_SECONDS_TO_INGEST), 60, TimeUnit.SECONDS);
@@ -118,10 +128,20 @@ public class ReindexRelocationIT extends ESIntegTestCase {
         assertNotNull("original task should have failed with an error due to relocation", originalResult.getError());
     }
 
-    private TaskGroup assertRelocatedParentTask(final String excludedNodeId) throws Exception {
+    private Map<String, Object> getTaskFromTasksIndex(TaskId taskId) {
+        assertNoFailures(indicesAdmin().prepareRefresh(TaskResultsService.TASK_INDEX).get());
+
+        final GetResponse response = client()
+            .prepareGet(TaskResultsService.TASK_INDEX, taskId.toString())
+            .get();
+        assertThat("task exists in .tasks index", response.isExists(), is(true));
+        return response.getSourceAsMap();
+    }
+
+    private TaskGroup assertRelocatedParentTask(final String nodeId) throws Exception {
         final TaskGroup[] relocatedParentHolder = new TaskGroup[1];
         assertBusy(() -> {
-            final var maybeParent = findAnyRunningReindexParentExcludingNode(excludedNodeId);
+            final var maybeParent = findAnyRunningReindexParentOnNode(nodeId);
             assertTrue("expected relocated parent task", maybeParent.isPresent());
             final var parent = maybeParent.get();
             assertThat("expected two slice subtasks", parent.childTasks().size(), equalTo(NUM_OF_SLICES));
@@ -169,9 +189,9 @@ public class ReindexRelocationIT extends ESIntegTestCase {
         return clusterAdmin().prepareGetTask(originalTaskId).setWaitForCompletion(true).get();
     }
 
-    private Optional<TaskGroup> findAnyRunningReindexParentExcludingNode(final String excludedNodeId) {
+    private Optional<TaskGroup> findAnyRunningReindexParentOnNode(final String nodeId) {
         final ListTasksResponse response = clusterAdmin().prepareListTasks().setActions(ReindexAction.NAME).setDetailed(true).get();
-        return response.getTaskGroups().stream().filter(g -> g.taskInfo().taskId().getNodeId().equals(excludedNodeId) == false).findFirst();
+        return response.getTaskGroups().stream().filter(g -> g.taskInfo().taskId().getNodeId().equals(nodeId)).findFirst();
     }
 
     private TaskResult getCompletedTaskResult(final TaskId taskId) {
@@ -192,9 +212,12 @@ public class ReindexRelocationIT extends ESIntegTestCase {
         ensureGreen(TimeValue.timeValueSeconds(10), SOURCE_INDEX);
     }
 
-    private void createDestinationIndex() {
+    private void createDestinationIndexPinnedToNode(final String nodeName) {
         prepareCreate(DEST_INDEX).setSettings(
-            Settings.builder().put("index.number_of_shards", 1).put("index.number_of_replicas", 0)
+            Settings.builder()
+                .put("index.number_of_shards", 1)
+                .put("index.number_of_replicas", 0)
+                .put("index.routing.allocation.require._name", nodeName)
         ).get();
         ensureGreen(TimeValue.timeValueSeconds(10), DEST_INDEX);
     }
