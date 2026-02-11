@@ -13,11 +13,17 @@ import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.action.bulk.BulkItemResponse;
 import org.elasticsearch.action.support.PlainActionFuture;
 import org.elasticsearch.client.internal.Client;
+import org.elasticsearch.cluster.ClusterState;
+import org.elasticsearch.cluster.node.DiscoveryNode;
+import org.elasticsearch.cluster.node.DiscoveryNodeUtils;
+import org.elasticsearch.cluster.node.DiscoveryNodes;
 import org.elasticsearch.cluster.project.ProjectResolver;
 import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.core.TimeValue;
 import org.elasticsearch.index.reindex.BulkByScrollResponse;
 import org.elasticsearch.index.reindex.BulkByScrollTask;
+import org.elasticsearch.index.reindex.ReindexAction;
+import org.elasticsearch.index.reindex.ReindexRequest;
 import org.elasticsearch.index.reindex.ResumeInfo;
 import org.elasticsearch.index.reindex.ScrollableHitSource;
 import org.elasticsearch.script.ScriptService;
@@ -25,22 +31,25 @@ import org.elasticsearch.tasks.TaskId;
 import org.elasticsearch.tasks.TaskManager;
 import org.elasticsearch.test.ESTestCase;
 import org.elasticsearch.threadpool.ThreadPool;
+import org.elasticsearch.transport.TransportResponseHandler;
+import org.elasticsearch.transport.TransportService;
 
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 
 import static org.elasticsearch.core.TimeValue.timeValueMillis;
-import static org.hamcrest.Matchers.instanceOf;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
+import static org.mockito.Mockito.when;
 
 public class ReindexerTests extends ESTestCase {
 
@@ -119,7 +128,7 @@ public class ReindexerTests extends ESTestCase {
         task.setWorker(Float.POSITIVE_INFINITY, null);
 
         final ActionListener<BulkByScrollResponse> original = spy(ActionListener.noop());
-        final ActionListener<BulkByScrollResponse> wrapped = reindexer.listenerWithRelocations(task, original);
+        final ActionListener<BulkByScrollResponse> wrapped = reindexer.listenerWithRelocations(task, reindexRequest(), original);
 
         assertSame(original, wrapped);
         verifyNoMoreInteractions(original);
@@ -134,7 +143,7 @@ public class ReindexerTests extends ESTestCase {
         // do NOT call task.requestRelocation()
 
         final ActionListener<BulkByScrollResponse> original = spy(ActionListener.noop());
-        final ActionListener<BulkByScrollResponse> wrapped = reindexer.listenerWithRelocations(task, original);
+        final ActionListener<BulkByScrollResponse> wrapped = reindexer.listenerWithRelocations(task, reindexRequest(), original);
 
         final BulkByScrollResponse response = reindexResponseWithBulkAndSearchFailures(null, null);
         wrapped.onResponse(response);
@@ -153,7 +162,7 @@ public class ReindexerTests extends ESTestCase {
         task.requestRelocation();
 
         final ActionListener<BulkByScrollResponse> original = spy(ActionListener.noop());
-        final ActionListener<BulkByScrollResponse> wrapped = reindexer.listenerWithRelocations(task, original);
+        final ActionListener<BulkByScrollResponse> wrapped = reindexer.listenerWithRelocations(task, reindexRequest(), original);
 
         // response without ResumeInfo
         final BulkByScrollResponse response = reindexResponseWithBulkAndSearchFailures(null, null);
@@ -166,21 +175,36 @@ public class ReindexerTests extends ESTestCase {
 
     public void testListenerWithRelocationsTriggersRelocationWhenResumeInfoPresent() {
         assumeTrue("reindex resilience enabled", ReindexPlugin.REINDEX_RESILIENCE_ENABLED);
-        final Reindexer reindexer = reindexerWithRelocation();
+        final ClusterService clusterService = mock(ClusterService.class);
+        final ClusterState clusterState = mock(ClusterState.class);
+        final DiscoveryNodes discoveryNodes = mock(DiscoveryNodes.class);
+        final DiscoveryNode targetNode = DiscoveryNodeUtils.builder("target-node").build();
+        when(clusterService.state()).thenReturn(clusterState);
+        when(clusterState.nodes()).thenReturn(discoveryNodes);
+        when(discoveryNodes.get("target-node")).thenReturn(targetNode);
+
+        final TransportService transportService = mock(TransportService.class);
+        doAnswer(invocation -> {
+            TransportResponseHandler<BulkByScrollResponse> handler = invocation.getArgument(3);
+            handler.handleResponse(reindexResponseWithBulkAndSearchFailures(null, null));
+            return null;
+        }).when(transportService).sendRequest(eq(targetNode), eq(ReindexAction.NAME), any(ReindexRequest.class), any());
+
+        final Reindexer reindexer = reindexerWithRelocation(clusterService, transportService);
         final BulkByScrollTask task = createTaskWithParentIdAndRelocationEnabled(TaskId.EMPTY_TASK_ID, true);
         task.setWorker(Float.POSITIVE_INFINITY, null);
         task.getWorkerState().setNodeToRelocateToSupplier(() -> Optional.of("target-node"));
         task.requestRelocation();
 
         final PlainActionFuture<BulkByScrollResponse> future = new PlainActionFuture<>();
-        final ActionListener<BulkByScrollResponse> wrapped = reindexer.listenerWithRelocations(task, future);
+        final ActionListener<BulkByScrollResponse> wrapped = reindexer.listenerWithRelocations(task, reindexRequest(), future);
 
         final BulkByScrollResponse response = reindexResponseWithResumeInfo();
         wrapped.onResponse(response);
 
-        // currently fires onFailure with UnsupportedOperationException (TODO in production code)
         assertTrue(future.isDone());
-        assertThat(expectThrows(Exception.class, future::actionGet), instanceOf(UnsupportedOperationException.class));
+        IllegalStateException exception = expectThrows(IllegalStateException.class, future::actionGet);
+        assertEquals("Task was relocated", exception.getMessage());
     }
 
     // --- workerListenerWithRelocationAndMetrics tests ---
@@ -272,8 +296,12 @@ public class ReindexerTests extends ESTestCase {
     }
 
     private static Reindexer reindexerWithRelocation() {
+        return reindexerWithRelocation(mock(ClusterService.class), mock(TransportService.class));
+    }
+
+    private static Reindexer reindexerWithRelocation(ClusterService clusterService, TransportService transportService) {
         return new Reindexer(
-            mock(ClusterService.class),
+            clusterService,
             mock(ProjectResolver.class),
             mock(Client.class),
             mock(ThreadPool.class),
@@ -281,6 +309,7 @@ public class ReindexerTests extends ESTestCase {
             mock(ReindexSslConfig.class),
             null,
             mock(TaskManager.class),
+            transportService,
             mock(ReindexRelocationNodePicker.class)
         );
     }
@@ -295,7 +324,12 @@ public class ReindexerTests extends ESTestCase {
             mock(ReindexSslConfig.class),
             metrics,
             mock(TaskManager.class),
+            mock(TransportService.class),
             mock(ReindexRelocationNodePicker.class)
         );
+    }
+
+    private static ReindexRequest reindexRequest() {
+        return new ReindexRequest();
     }
 }
