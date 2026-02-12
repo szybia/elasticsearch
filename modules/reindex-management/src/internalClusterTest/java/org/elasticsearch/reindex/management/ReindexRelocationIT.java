@@ -9,43 +9,56 @@
 
 package org.elasticsearch.reindex.management;
 
+import org.apache.lucene.util.SetOnce;
 import org.elasticsearch.action.admin.cluster.node.tasks.get.GetTaskResponse;
-import org.elasticsearch.action.admin.cluster.node.tasks.list.ListTasksResponse;
-import org.elasticsearch.action.admin.cluster.node.tasks.list.TaskGroup;
 import org.elasticsearch.action.get.GetResponse;
 import org.elasticsearch.client.Request;
 import org.elasticsearch.client.Response;
 import org.elasticsearch.client.RestClient;
 import org.elasticsearch.cluster.node.DiscoveryNode;
+import org.elasticsearch.cluster.node.DiscoveryNodeRole;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.core.Strings;
 import org.elasticsearch.core.TimeValue;
+import org.elasticsearch.index.reindex.BulkByScrollTask;
 import org.elasticsearch.index.reindex.ReindexAction;
 import org.elasticsearch.node.ShutdownPrepareService;
 import org.elasticsearch.plugins.Plugin;
 import org.elasticsearch.reindex.ReindexPlugin;
+import org.elasticsearch.tasks.RawTaskStatus;
 import org.elasticsearch.tasks.TaskId;
 import org.elasticsearch.tasks.TaskInfo;
 import org.elasticsearch.tasks.TaskResult;
 import org.elasticsearch.tasks.TaskResultsService;
 import org.elasticsearch.test.ESIntegTestCase;
+import org.elasticsearch.test.NodeRoles;
 import org.elasticsearch.test.rest.ESRestTestCase;
 import org.elasticsearch.xcontent.ObjectPath;
+import org.elasticsearch.xcontent.XContentParser;
+import org.elasticsearch.xcontent.XContentParserConfiguration;
+import org.elasticsearch.xcontent.XContentType;
 
+import java.io.IOException;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.List;
 import java.util.Map;
-import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertNoFailures;
+import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.greaterThanOrEqualTo;
 import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.lessThan;
+import static org.hamcrest.Matchers.lessThanOrEqualTo;
+import static org.hamcrest.Matchers.nullValue;
 
 /**
  * Integration test(s) for reindex task relocation on node shutdown.
  */
-@ESIntegTestCase.ClusterScope(numDataNodes = 0, numClientNodes = 0, scope = ESIntegTestCase.Scope.TEST)
+@ESIntegTestCase.ClusterScope(numDataNodes = 0, numClientNodes = 0)
 public class ReindexRelocationIT extends ESIntegTestCase {
 
     private static final String SOURCE_INDEX = "reindex_src";
@@ -53,7 +66,7 @@ public class ReindexRelocationIT extends ESIntegTestCase {
     private static final int BULK_SIZE = 1;
     private static final int REQUESTS_PER_SECOND = 1;
     private static final int NUM_OF_SLICES = 1;
-    private static final int NUMBER_OF_DOCUMENTS_THAT_TAKES_60_SECONDS_TO_INGEST = 10 * REQUESTS_PER_SECOND * BULK_SIZE;
+    private static final int NUMBER_OF_DOCUMENTS_THAT_TAKES_60_SECONDS_TO_INGEST = 60 * REQUESTS_PER_SECOND * BULK_SIZE;
 
     @Override
     protected Collection<Class<? extends Plugin>> nodePlugins() {
@@ -65,94 +78,158 @@ public class ReindexRelocationIT extends ESIntegTestCase {
         return false;
     }
 
-    @Override
-    protected Settings nodeSettings(int ordinal, Settings otherSettings) {
-        return Settings.builder().put(super.nodeSettings(ordinal, otherSettings)).build();
-    }
-
     /**
-     * Test long-running reindex task is relocated to a suitable node, by doing the following:
-     * 1. Create two named data nodes: nodeA (hosting the shard) and nodeB (hosting the reindex task)
-     * 2. Create source index pinned to nodeA without replicas, so the scroll always lives there
-     * 3. Create destination index pinned to nodeA without replicas, so we don't get no_shard_available_action_exception when we shut down nodeA
+     * Test long-running non-sliced reindex task is relocated to a suitable node by doing the following:
+     * 1. Create two data nodes: nodeA (hosting source and destination indices) and nodeB (hosting the reindex task)
+     * 2. Create the source index pinned to nodeA without replicas, so the scroll always lives there
+     * 3. Create the destination index pinned to nodeA without replicas, so it's available when we shutdown nodeB
      * 4. Start a throttled reindex on nodeB
-     * 5. Stop task_node and observe relocation to nodeA
+     * 5. Stop nodeB and observe relocation to nodeA
      */
-    public void testReindexRelocation() throws Exception {
+    public void testNonSlicedReindexRelocation() throws Exception {
         assumeTrue("reindex resilience is enabled", ReindexPlugin.REINDEX_RESILIENCE_ENABLED);
 
-        final String master = internalCluster().startMasterOnlyNode();
-        final String nodeA = internalCluster().startDataOnlyNode();
-        final String nodeB = internalCluster().startDataOnlyNode();
-        ensureStableCluster(3);
+        final String nodeAName = internalCluster().startNode(
+            NodeRoles.onlyRoles(Set.of(DiscoveryNodeRole.DATA_ROLE, DiscoveryNodeRole.MASTER_ROLE))
+        );
+        final String nodeAId = nodeIdByName(nodeAName);
+        final String nodeBName = internalCluster().startNode(
+            NodeRoles.onlyRoles(Set.of(DiscoveryNodeRole.DATA_ROLE, DiscoveryNodeRole.MASTER_ROLE))
+        );
+        final String nodeBId = nodeIdByName(nodeBName);
+        ensureStableCluster(2);
 
-        createSourceIndexPinnedToNode(nodeA);
-        createDestinationIndexPinnedToNode(nodeA);
+        createIndexPinnedToNodeName(SOURCE_INDEX, nodeAName);
+        createIndexPinnedToNodeName(DEST_INDEX, nodeAName);
         indexRandom(true, SOURCE_INDEX, NUMBER_OF_DOCUMENTS_THAT_TAKES_60_SECONDS_TO_INGEST);
-        ensureGreen(SOURCE_INDEX);
+        ensureGreen(SOURCE_INDEX, DEST_INDEX);
 
-        // Start throttled async reindex on nodeB
-        final TaskId originalTaskId = startAsyncThrottledReindex(nodeB);
+        // Start throttled async reindex on nodeB and check it has the expected state
+        final TaskId originalTaskId = startAsyncThrottledReindexOnNode(nodeBName);
+        final TaskResult originalReindex = getRunningReindex(originalTaskId);
+        assertThat("reindex should start on nodeB", originalReindex.getTask().taskId().getNodeId(), equalTo(nodeBId));
+        assertRunningReindexTaskExpectedState(originalReindex.getTask());
 
-        final TaskInfo running = getRunningTask(originalTaskId);
-        final var reindexNodeB = nodeById(running.taskId().getNodeId());
-        assertThat("task should start on nodeB", reindexNodeB.getName(), equalTo(nodeB));
+        // Stop nodeB to trigger reindex relocation
+        internalCluster().getInstance(ShutdownPrepareService.class, nodeBName).prepareForShutdown();
+        internalCluster().stopNode(nodeBName);
 
-        // Stop the node hosting the task to trigger relocation
-        internalCluster().getInstance(ShutdownPrepareService.class, nodeB).prepareForShutdown();
-        internalCluster().stopNode(nodeB);
+        // Assert the original task is in .tasks index and has expected content (including relocated taskId)
+        final TaskId relocatedTaskId = assertOriginalTaskEndStateAndGetRelocatedTaskId(originalTaskId);
 
-        final Map<String, Object> finishedOriginalTask = getTaskFromTasksIndex(originalTaskId);
-        final String errorType = ObjectPath.eval("error.type", finishedOriginalTask);
-        final String errorMessage = ObjectPath.eval("error.reason", finishedOriginalTask);
-        assertThat("expected error type", errorType, equalTo("illegal_state_exception"));
-        assertThat("expected error message", errorMessage, equalTo("Task was relocated"));
+        // Assert relocated reindex is running and has expected state
+        final TaskResult relocatedReindex = getRunningReindex(relocatedTaskId);
+        assertThat("relocated reindex should be on nodeA", relocatedReindex.getTask().taskId().getNodeId(), equalTo(nodeAId));
+        assertRunningReindexTaskExpectedState(relocatedReindex.getTask());
 
-        //todo(szy): change when async
-        final TaskGroup relocatedParent = assertRelocatedParentTask(nodeA);
+        // Speed up reindex post-relocation to keep the test fast
+        rethrottleReindex(relocatedTaskId, -1); // unlimited
 
-        // Speed it up post-relocation to keep the test fast
-//        rethrottle(relocatedParent.taskInfo().taskId().toString(), -1); // unlimited
-//
-//        // Wait for completion of the relocated task
-//        final var relocatedResult = getCompletedTaskResult(relocatedParent.taskInfo().taskId());
-//        assertNotNull(relocatedResult.getTask());
-//        assertNull("relocated task should not have error", relocatedResult.getError());
+        assertRelocatedTaskExpectedEndState(relocatedTaskId);
 
-        // Assert destination index has all documents reindexed
-        assertBusy(() -> assertDocCount(DEST_INDEX, NUMBER_OF_DOCUMENTS_THAT_TAKES_60_SECONDS_TO_INGEST), 60, TimeUnit.SECONDS);
-
-        // Original task should be recorded as failed (with error) in tasks index
-        final var originalResult = getCompletedTaskResult(originalTaskId);
-        assertNotNull(originalResult.getTask());
-        assertNotNull("original task should have failed with an error due to relocation", originalResult.getError());
+        // assert all documents have been reindexed
+        assertDocCount(DEST_INDEX, NUMBER_OF_DOCUMENTS_THAT_TAKES_60_SECONDS_TO_INGEST);
     }
 
-    private Map<String, Object> getTaskFromTasksIndex(TaskId taskId) {
+    private void assertOriginalTaskExpectedEndState(final TaskResult originalResult) {
+        assertThat("task completed", originalResult.isCompleted(), is(true));
+
+        final Map<String, Object> errorMap = originalResult.getErrorAsMap();
+        assertThat("we get expected error type", errorMap.get("type"), equalTo("illegal_state_exception"));
+        assertThat("we get expected error message", (String) errorMap.get("reason"), containsString("Task was relocated: "));
+
+        final Map<String, Object> innerResponse = originalResult.getResponseAsMap();
+        assertThat(innerResponse, equalTo(Map.of()));
+
+        final TaskInfo taskInfo = originalResult.getTask();
+        assertThat(taskInfo.action(), equalTo(ReindexAction.NAME));
+        assertThat(taskInfo.description(), equalTo(Strings.format("reindex from [%s] to [%s]", SOURCE_INDEX, DEST_INDEX)));
+        assertThat(taskInfo.cancelled(), equalTo(false));
+        assertThat(taskInfo.cancellable(), equalTo(true));
+
+        final Map<String, Object> taskStatus = ((RawTaskStatus) taskInfo.status()).toMap();
+        assertThat(taskStatus.get("slice_id"), is(nullValue()));
+        assertThat((Integer) taskStatus.get("total"), lessThanOrEqualTo(NUMBER_OF_DOCUMENTS_THAT_TAKES_60_SECONDS_TO_INGEST));
+        assertThat(taskStatus.get("updated"), is(0));
+        assertThat((Integer) taskStatus.get("created"), lessThan(NUMBER_OF_DOCUMENTS_THAT_TAKES_60_SECONDS_TO_INGEST));
+        assertThat(taskStatus.get("deleted"), is(0));
+        assertThat((Integer) taskStatus.get("batches"), lessThan(NUMBER_OF_DOCUMENTS_THAT_TAKES_60_SECONDS_TO_INGEST));
+        assertThat(taskStatus.get("version_conflicts"), is(0));
+        assertThat(taskStatus.get("noops"), is(0));
+        assertThat(ObjectPath.eval("retries.bulk", taskStatus), is(0));
+        assertThat(ObjectPath.eval("retries.search", taskStatus), is(0));
+        assertThat(taskStatus.get("throttled_millis"), is(0));
+        assertThat(taskStatus.get("requests_per_second"), is(1.0));
+        assertThat(taskStatus.get("reason_cancelled"), is(nullValue()));
+        assertThat((Integer) taskStatus.get("throttled_until_millis"), greaterThanOrEqualTo(0));
+    }
+
+    private void assertRelocatedTaskExpectedEndState(final TaskId taskId) throws Exception {
+        final SetOnce<TaskResult> finishedResult = new SetOnce<>();
+
+        assertBusy(() -> finishedResult.set(getCompletedTaskResult(taskId)), 30, TimeUnit.SECONDS);
+        final TaskResult result = finishedResult.get();
+        assertThat("relocated task has no error", result.getError(), is(nullValue()));
+        final Map<String, Object> innerResponse = result.getResponseAsMap();
+        assertThat(innerResponse.get("timed_out"), is(false));
+        assertThat(innerResponse.get("total"), is(NUMBER_OF_DOCUMENTS_THAT_TAKES_60_SECONDS_TO_INGEST));
+        assertThat(innerResponse.get("updated"), is(0));
+        assertThat(innerResponse.get("created"), is(NUMBER_OF_DOCUMENTS_THAT_TAKES_60_SECONDS_TO_INGEST));
+        assertThat(innerResponse.get("deleted"), is(0));
+        assertThat(innerResponse.get("batches"), is(NUMBER_OF_DOCUMENTS_THAT_TAKES_60_SECONDS_TO_INGEST));
+        assertThat(innerResponse.get("version_conflicts"), is(0));
+        assertThat(innerResponse.get("noops"), is(0));
+        assertThat(innerResponse.get("throttled_millis"), is(0));
+        assertThat(innerResponse.get("requests_per_second"), is(-1.0));
+        assertThat(innerResponse.get("throttled_until_millis"), is(0));
+        assertThat(innerResponse.get("failures"), is(List.of()));
+
+        final TaskInfo taskInfo = result.getTask();
+        assertThat(taskInfo.action(), equalTo(ReindexAction.NAME));
+        assertThat(taskInfo.description(), equalTo(Strings.format("reindex from [%s] to [%s]", SOURCE_INDEX, DEST_INDEX)));
+        assertThat(taskInfo.cancelled(), equalTo(false));
+        assertThat(taskInfo.cancellable(), equalTo(true));
+
+        final Map<String, Object> taskStatus = ((RawTaskStatus) taskInfo.status()).toMap();
+        assertThat(taskStatus.get("slice_id"), is(nullValue()));
+        assertThat(taskStatus.get("total"), is(NUMBER_OF_DOCUMENTS_THAT_TAKES_60_SECONDS_TO_INGEST));
+        assertThat(taskStatus.get("updated"), is(0));
+        assertThat(taskStatus.get("created"), is(NUMBER_OF_DOCUMENTS_THAT_TAKES_60_SECONDS_TO_INGEST));
+        assertThat(taskStatus.get("deleted"), is(0));
+        assertThat(taskStatus.get("batches"), is(NUMBER_OF_DOCUMENTS_THAT_TAKES_60_SECONDS_TO_INGEST));
+        assertThat(taskStatus.get("version_conflicts"), is(0));
+        assertThat(taskStatus.get("noops"), is(0));
+        assertThat(ObjectPath.eval("retries.bulk", taskStatus), is(0));
+        assertThat(ObjectPath.eval("retries.search", taskStatus), is(0));
+        assertThat(taskStatus.get("throttled_millis"), is(0));
+        assertThat(taskStatus.get("requests_per_second"), is(-1.0));
+        assertThat(taskStatus.get("reason_cancelled"), is(nullValue()));
+        assertThat(taskStatus.get("throttled_until_millis"), is(0));
+    }
+
+    private TaskId assertOriginalTaskEndStateAndGetRelocatedTaskId(TaskId taskId) {
         assertNoFailures(indicesAdmin().prepareRefresh(TaskResultsService.TASK_INDEX).get());
+        final GetResponse getTaskResponse = client().prepareGet(TaskResultsService.TASK_INDEX, taskId.toString()).get();
+        assertThat("task exists in .tasks index", getTaskResponse.isExists(), is(true));
 
-        final GetResponse response = client()
-            .prepareGet(TaskResultsService.TASK_INDEX, taskId.toString())
-            .get();
-        assertThat("task exists in .tasks index", response.isExists(), is(true));
-        return response.getSourceAsMap();
+        final TaskResult result;
+        try (
+            XContentParser parser = XContentType.JSON.xContent()
+                .createParser(XContentParserConfiguration.EMPTY, getTaskResponse.getSourceAsString())
+        ) {
+            result = TaskResult.PARSER.apply(parser, null);
+        } catch (IOException e) {
+            throw new AssertionError("failed to parse task result from .tasks index", e);
+        }
+
+        assertOriginalTaskExpectedEndState(result);
+
+        final String errorReason = result.getErrorAsMap().get("reason").toString();
+        // todo(szy): rework?
+        return new TaskId(errorReason.split(": ")[1]);
     }
 
-    private TaskGroup assertRelocatedParentTask(final String nodeId) throws Exception {
-        final TaskGroup[] relocatedParentHolder = new TaskGroup[1];
-        assertBusy(() -> {
-            final var maybeParent = findAnyRunningReindexParentOnNode(nodeId);
-            assertTrue("expected relocated parent task", maybeParent.isPresent());
-            final var parent = maybeParent.get();
-            assertThat("expected two slice subtasks", parent.childTasks().size(), equalTo(NUM_OF_SLICES));
-            final String newNodeId = parent.taskInfo().taskId().getNodeId();
-            parent.childTasks().forEach(child -> assertThat(child.taskInfo().taskId().getNodeId(), equalTo(newNodeId)));
-            relocatedParentHolder[0] = parent;
-        }, 60, TimeUnit.SECONDS);
-        return relocatedParentHolder[0];
-    }
-
-    private TaskId startAsyncThrottledReindex(final String nodeName) throws Exception {
+    private TaskId startAsyncThrottledReindexOnNode(final String nodeName) throws Exception {
         try (RestClient restClient = createRestClient(nodeName)) {
             final Request request = new Request("POST", "/_reindex");
             request.addParameter("wait_for_completion", "false");
@@ -177,21 +254,33 @@ public class ReindexRelocationIT extends ESIntegTestCase {
         }
     }
 
-    private TaskInfo getRunningTask(final TaskId taskId) {
-        final GetTaskResponse response = clusterAdmin().prepareGetTask(taskId).get();
-        final TaskResult task = response.getTask();
-        assertNotNull(task);
-        assertThat(task.isCompleted(), is(false));
-        return task.getTask();
+    private TaskResult getRunningReindex(final TaskId taskId) {
+        final TaskResult reindex = clusterAdmin().prepareGetTask(taskId).get().getTask();
+        assertThat("reindex is running", reindex.isCompleted(), is(false));
+        return reindex;
     }
 
-    private GetTaskResponse findFinishedTask(final TaskId originalTaskId) {
-        return clusterAdmin().prepareGetTask(originalTaskId).setWaitForCompletion(true).get();
-    }
+    private void assertRunningReindexTaskExpectedState(final TaskInfo taskInfo) {
+        assertThat(taskInfo.action(), equalTo(ReindexAction.NAME));
+        assertThat(taskInfo.description(), equalTo(Strings.format("reindex from [%s] to [%s]", SOURCE_INDEX, DEST_INDEX)));
+        assertThat(taskInfo.cancelled(), equalTo(false));
+        assertThat(taskInfo.cancellable(), equalTo(true));
 
-    private Optional<TaskGroup> findAnyRunningReindexParentOnNode(final String nodeId) {
-        final ListTasksResponse response = clusterAdmin().prepareListTasks().setActions(ReindexAction.NAME).setDetailed(true).get();
-        return response.getTaskGroups().stream().filter(g -> g.taskInfo().taskId().getNodeId().equals(nodeId)).findFirst();
+        final BulkByScrollTask.Status taskStatus = ((BulkByScrollTask.Status) taskInfo.status());
+        // the initial running reindex might initially have 0
+        assertThat(taskStatus.getTotal(), lessThanOrEqualTo((long) NUMBER_OF_DOCUMENTS_THAT_TAKES_60_SECONDS_TO_INGEST));
+        assertThat(taskStatus.getUpdated(), is(0L));
+        assertThat(taskStatus.getCreated(), lessThan((long) NUMBER_OF_DOCUMENTS_THAT_TAKES_60_SECONDS_TO_INGEST));
+        assertThat(taskStatus.getDeleted(), is(0L));
+        assertThat(taskStatus.getBatches(), lessThan(NUMBER_OF_DOCUMENTS_THAT_TAKES_60_SECONDS_TO_INGEST));
+        assertThat(taskStatus.getVersionConflicts(), is(0L));
+        assertThat(taskStatus.getNoops(), is(0L));
+        assertThat(taskStatus.getBulkRetries(), is(0L));
+        assertThat(taskStatus.getSearchRetries(), is(0L));
+        assertThat(taskStatus.getThrottled(), is(TimeValue.ZERO));
+        assertThat(taskStatus.getRequestsPerSecond(), is(1.0f));
+        assertThat(taskStatus.getReasonCancelled(), is(nullValue()));
+        assertThat(taskStatus.getThrottledUntil(), greaterThanOrEqualTo(TimeValue.ZERO));
     }
 
     private TaskResult getCompletedTaskResult(final TaskId taskId) {
@@ -202,8 +291,8 @@ public class ReindexRelocationIT extends ESIntegTestCase {
         return task;
     }
 
-    private void createSourceIndexPinnedToNode(final String nodeName) {
-        prepareCreate(SOURCE_INDEX).setSettings(
+    private void createIndexPinnedToNodeName(final String index, final String nodeName) {
+        prepareCreate(index).setSettings(
             Settings.builder()
                 .put("index.number_of_shards", 1)
                 .put("index.number_of_replicas", 0)
@@ -212,46 +301,35 @@ public class ReindexRelocationIT extends ESIntegTestCase {
         ensureGreen(TimeValue.timeValueSeconds(10), SOURCE_INDEX);
     }
 
-    private void createDestinationIndexPinnedToNode(final String nodeName) {
-        prepareCreate(DEST_INDEX).setSettings(
-            Settings.builder()
-                .put("index.number_of_shards", 1)
-                .put("index.number_of_replicas", 0)
-                .put("index.routing.allocation.require._name", nodeName)
-        ).get();
-        ensureGreen(TimeValue.timeValueSeconds(10), DEST_INDEX);
-    }
-
-    private void rethrottle(final String taskIdString, final int rps) {
+    private void rethrottleReindex(final TaskId taskId, final int rps) {
         try {
             final RestClient restClient = getRestClient();
-            final Request request = new Request("POST", "/_reindex/" + taskIdString + "/_rethrottle");
+            final Request request = new Request("POST", "/_reindex/" + taskId + "/_rethrottle");
             request.addParameter("requests_per_second", Integer.toString(rps));
             restClient.performRequest(request);
         } catch (Exception e) {
-            throw new RuntimeException(e);
+            throw new AssertionError("failed to rethrottle reindex", e);
         }
     }
 
-    private DiscoveryNode nodeById(final String nodeId) {
-        final DiscoveryNode node = clusterService().state().nodes().get(nodeId);
-        assertNotNull("node must be found", node);
-        return node;
+    private String nodeIdByName(final String nodeName) {
+        final String nodeWithName = clusterService().state()
+            .nodes()
+            .stream()
+            .filter(node -> node.getName().equals(nodeName))
+            .map(DiscoveryNode::getId)
+            .findAny()
+            .orElse(null);
+        assertNotNull("node with name not found ", nodeWithName);
+        return nodeWithName;
     }
 
-    private void assertDocCount(final String index, final int expected) {
-        final TimeValue timeout = TimeValue.THIRTY_SECONDS;
-        final var resp = client().admin().indices().prepareGetIndex(timeout).addIndices(index).get();
-        // Use _count API via REST for simplicity
-        try {
-            final RestClient restClient = getRestClient();
-            final Request request = new Request("GET", "/" + index + "/_count");
-            final Response response = restClient.performRequest(request);
-            final Map<?, ?> body = ESRestTestCase.entityAsMap(response);
-            final int count = ((Number) body.get("count")).intValue();
-            assertThat(count, equalTo(expected));
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
+    private void assertDocCount(final String index, final int expected) throws IOException {
+        assertNoFailures(indicesAdmin().prepareRefresh(index).get());
+        final Request request = new Request("GET", "/" + index + "/_count");
+        final Response response = getRestClient().performRequest(request);
+        final Map<?, ?> body = ESRestTestCase.entityAsMap(response);
+        final int count = ((Number) body.get("count")).intValue();
+        assertThat(count, equalTo(expected));
     }
 }
