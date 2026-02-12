@@ -53,6 +53,7 @@ import org.elasticsearch.index.reindex.BulkByScrollTask;
 import org.elasticsearch.index.reindex.ReindexAction;
 import org.elasticsearch.index.reindex.ReindexRequest;
 import org.elasticsearch.index.reindex.RemoteInfo;
+import org.elasticsearch.index.reindex.ResumeBulkByScrollRequest;
 import org.elasticsearch.index.reindex.ResumeBulkByScrollResponse;
 import org.elasticsearch.index.reindex.ResumeInfo;
 import org.elasticsearch.index.reindex.ResumeReindexAction;
@@ -287,6 +288,7 @@ public class Reindexer {
                 return;
             }
             request.setResumeInfo(response.getTaskResumeInfo().get());
+            final ResumeBulkByScrollRequest resumeRequest = new ResumeBulkByScrollRequest(request);
             final ActionListener<ResumeBulkByScrollResponse> relocationListener = ActionListener.wrap(
                 resp -> l.onFailure(new RelocatedException(resp.getTaskId())),
                 l::onFailure
@@ -294,7 +296,7 @@ public class Reindexer {
             transportService.sendRequest(
                 nodeToRelocateToNode,
                 ResumeReindexAction.NAME,
-                request,
+                resumeRequest,
                 new ActionListenerResponseHandler<>(
                     relocationListener,
                     ResumeBulkByScrollResponse::new,
