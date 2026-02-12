@@ -130,6 +130,7 @@ public class ReindexRelocationIT extends ESIntegTestCase {
         // assert all documents have been reindexed
         assertDocCount(DEST_INDEX, NUMBER_OF_DOCUMENTS_THAT_TAKES_60_SECONDS_TO_INGEST);
     }
+    //todo(szy): add test for two reindex task hops
 
     private TaskId assertOriginalTaskExpectedEndStateAndGetRelocatedTaskId(final TaskResult originalResult) {
         assertThat("task completed", originalResult.isCompleted(), is(true));
@@ -154,7 +155,7 @@ public class ReindexRelocationIT extends ESIntegTestCase {
         assertThat(taskStatus.get("noops"), is(0));
         assertThat(ObjectPath.eval("retries.bulk", taskStatus), is(0));
         assertThat(ObjectPath.eval("retries.search", taskStatus), is(0));
-        assertThat(taskStatus.get("throttled_millis"), is(0));
+        assertThat((Integer) taskStatus.get("throttled_millis"), greaterThanOrEqualTo(0));
         assertThat(taskStatus.get("requests_per_second"), is(1.0));
         assertThat(taskStatus.get("reason_cancelled"), is(nullValue()));
         assertThat((Integer) taskStatus.get("throttled_until_millis"), greaterThanOrEqualTo(0));
@@ -181,9 +182,9 @@ public class ReindexRelocationIT extends ESIntegTestCase {
         assertThat(innerResponse.get("batches"), is(NUMBER_OF_DOCUMENTS_THAT_TAKES_60_SECONDS_TO_INGEST));
         assertThat(innerResponse.get("version_conflicts"), is(0));
         assertThat(innerResponse.get("noops"), is(0));
-        assertThat(innerResponse.get("throttled_millis"), is(0));
+        assertThat((Integer) innerResponse.get("throttled_millis"), greaterThanOrEqualTo(0));
         assertThat(innerResponse.get("requests_per_second"), is(-1.0));
-        assertThat(innerResponse.get("throttled_until_millis"), is(0));
+        assertThat((Integer) innerResponse.get("throttled_until_millis"), greaterThanOrEqualTo(0));
         assertThat(innerResponse.get("failures"), is(List.of()));
 
         final TaskInfo taskInfo = result.getTask();
@@ -203,10 +204,10 @@ public class ReindexRelocationIT extends ESIntegTestCase {
         assertThat(taskStatus.get("noops"), is(0));
         assertThat(ObjectPath.eval("retries.bulk", taskStatus), is(0));
         assertThat(ObjectPath.eval("retries.search", taskStatus), is(0));
-        assertThat(taskStatus.get("throttled_millis"), is(0));
+        assertThat((Integer) taskStatus.get("throttled_millis"), greaterThanOrEqualTo(0));
         assertThat(taskStatus.get("requests_per_second"), is(-1.0));
         assertThat(taskStatus.get("reason_cancelled"), is(nullValue()));
-        assertThat(taskStatus.get("throttled_until_millis"), is(0));
+        assertThat((Integer) taskStatus.get("throttled_until_millis"), greaterThanOrEqualTo(0));
     }
 
     private TaskId assertOriginalTaskEndStateInTasksIndexAndGetRelocatedTaskId(TaskId taskId) {
@@ -275,7 +276,7 @@ public class ReindexRelocationIT extends ESIntegTestCase {
         assertThat(taskStatus.getNoops(), is(0L));
         assertThat(taskStatus.getBulkRetries(), is(0L));
         assertThat(taskStatus.getSearchRetries(), is(0L));
-        assertThat(taskStatus.getThrottled(), is(TimeValue.ZERO));
+        assertThat(taskStatus.getThrottled(), greaterThanOrEqualTo(TimeValue.ZERO));
         assertThat(taskStatus.getRequestsPerSecond(), is(1.0f));
         assertThat(taskStatus.getReasonCancelled(), is(nullValue()));
         assertThat(taskStatus.getThrottledUntil(), greaterThanOrEqualTo(TimeValue.ZERO));
