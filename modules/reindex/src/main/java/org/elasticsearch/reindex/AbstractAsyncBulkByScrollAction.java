@@ -571,7 +571,7 @@ public abstract class AbstractAsyncBulkByScrollAction<
                     remoteVersion
                 );
                 final ResumeInfo resumeInfo = new ResumeInfo(workerResumeInfo, null);
-                // build response with resume info - don't call finishHim as it closes the scroll
+                // build response with resume info. everything else doesn't matter since onFailure is called higher up.
                 final BulkByScrollResponse response = new BulkByScrollResponse(
                     TimeValue.MINUS_ONE,
                     new BulkByScrollTask.Status(List.of(), null),
@@ -581,6 +581,7 @@ public abstract class AbstractAsyncBulkByScrollAction<
                     resumeInfo
                 );
                 listener.onResponse(response);
+                // don't call finishHim as it closes the scroll
                 return;
             }
             // if the task has no node to relocate to, continue. it might finish before shutdown or a suitable node might join the cluster.

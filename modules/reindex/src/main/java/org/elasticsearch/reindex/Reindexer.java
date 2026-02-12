@@ -54,6 +54,7 @@ import org.elasticsearch.index.reindex.ReindexAction;
 import org.elasticsearch.index.reindex.ReindexRequest;
 import org.elasticsearch.index.reindex.RemoteInfo;
 import org.elasticsearch.index.reindex.ResumeBulkByScrollResponse;
+import org.elasticsearch.index.reindex.ResumeInfo;
 import org.elasticsearch.index.reindex.ResumeReindexAction;
 import org.elasticsearch.index.reindex.ScrollableHitSource;
 import org.elasticsearch.index.reindex.WorkerBulkByScrollTaskState;
@@ -139,8 +140,12 @@ public class Reindexer {
     }
 
     public void execute(BulkByScrollTask task, ReindexRequest request, Client bulkClient, ActionListener<BulkByScrollResponse> listener) {
-        // todo(szy/sam): correct the startTime sent over for relocation
-        long startTime = System.nanoTime();
+        // todo(szy/sam): handle sliced
+        // todo(szy/sam): bug, we send System::nanoTime across JVMs
+        final long startTime = request.getResumeInfo()
+            .flatMap(ResumeInfo::getWorker)
+            .map(ResumeInfo.WorkerResumeInfo::startTime)
+            .orElseGet(System::nanoTime);
 
         final ActionListener<BulkByScrollResponse> listenerWithRelocations = listenerWithRelocations(task, request, listener);
 
@@ -164,11 +169,7 @@ public class Reindexer {
                     projectResolver.getProjectState(clusterService.state()),
                     reindexSslConfig,
                     request,
-                    workerListenerWithRelocationAndMetrics(
-                        listenerWithRelocations,
-                        startTime,
-                        request.getRemoteInfo() != null
-                    )
+                    workerListenerWithRelocationAndMetrics(listenerWithRelocations, startTime, request.getRemoteInfo() != null)
                 );
                 searchAction.start();
             }
@@ -215,7 +216,7 @@ public class Reindexer {
         if (metrics == null) {
             return listener;
         }
-
+        // todo(szy): add relocation metrics
         // add completion metrics
         var withCompletionMetrics = new ActionListener<BulkByScrollResponse>() {
             @Override
@@ -281,9 +282,7 @@ public class Reindexer {
             final DiscoveryNode nodeToRelocateToNode = clusterService.state().nodes().get(nodeToRelocateTo);
             if (nodeToRelocateToNode == null) {
                 l.onFailure(
-                    new IllegalStateException(
-                        Strings.format("Node %s to relocate to left cluster before relocation", nodeToRelocateTo)
-                    )
+                    new IllegalStateException(Strings.format("Node %s to relocate to left cluster before relocation", nodeToRelocateTo))
                 );
                 return;
             }

@@ -171,6 +171,7 @@ public class LeaderBulkByScrollTaskState {
         }
         final var resumeInfo = new ResumeInfo(null, sliceResumeInfoMap);
         listener.onResponse(
+            // build response with resume info. everything else doesn't matter since onFailure is called higher up.
             new BulkByScrollResponse(
                 TimeValue.MINUS_ONE,
                 new BulkByScrollTask.Status(List.of(), null),
