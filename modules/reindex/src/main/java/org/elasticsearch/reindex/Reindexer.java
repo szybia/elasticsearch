@@ -53,6 +53,8 @@ import org.elasticsearch.index.reindex.BulkByScrollTask;
 import org.elasticsearch.index.reindex.ReindexAction;
 import org.elasticsearch.index.reindex.ReindexRequest;
 import org.elasticsearch.index.reindex.RemoteInfo;
+import org.elasticsearch.index.reindex.ResumeBulkByScrollResponse;
+import org.elasticsearch.index.reindex.ResumeReindexAction;
 import org.elasticsearch.index.reindex.ScrollableHitSource;
 import org.elasticsearch.index.reindex.WorkerBulkByScrollTaskState;
 import org.elasticsearch.reindex.remote.RemoteScrollableHitSource;
@@ -286,17 +288,17 @@ public class Reindexer {
                 return;
             }
             request.setResumeInfo(response.getTaskResumeInfo().get());
-            final ActionListener<BulkByScrollResponse> relocationListener = ActionListener.wrap(
-                ignored -> l.onFailure(new IllegalStateException("Task was relocated")),
+            final ActionListener<ResumeBulkByScrollResponse> relocationListener = ActionListener.wrap(
+                resp -> l.onFailure(new IllegalStateException("Task was relocated: " + resp.getTaskId())),
                 l::onFailure
             );
             transportService.sendRequest(
                 nodeToRelocateToNode,
-                ReindexAction.NAME,
+                ResumeReindexAction.NAME,
                 request,
                 new ActionListenerResponseHandler<>(
                     relocationListener,
-                    BulkByScrollResponse::new,
+                    ResumeBulkByScrollResponse::new,
                     threadPool.executor(ThreadPool.Names.GENERIC)
                 )
             );
