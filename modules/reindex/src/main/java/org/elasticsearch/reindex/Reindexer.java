@@ -289,7 +289,7 @@ public class Reindexer {
             }
             request.setResumeInfo(response.getTaskResumeInfo().get());
             final ActionListener<ResumeBulkByScrollResponse> relocationListener = ActionListener.wrap(
-                resp -> l.onFailure(new IllegalStateException("Task was relocated: " + resp.getTaskId())),
+                resp -> l.onFailure(new RelocatedException(resp.getTaskId())),
                 l::onFailure
             );
             transportService.sendRequest(
