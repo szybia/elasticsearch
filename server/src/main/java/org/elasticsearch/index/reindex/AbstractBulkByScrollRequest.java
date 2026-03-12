@@ -116,6 +116,14 @@ public abstract class AbstractBulkByScrollRequest<Self extends AbstractBulkByScr
     @Nullable
     private ResumeInfo resumeInfo;
 
+    /**
+     * Identity of the original task, propagated across relocations and slices so the user-facing task ID and start time are preserved.
+     * Transient — not serialized; flows through {@link ResumeInfo} on the wire, then synced here via {@link #setResumeInfo} or set
+     * directly by the init path for first-run tasks.
+     */
+    @Nullable
+    private ResumeInfo.RelocationOrigin relocationOrigin;
+
     public AbstractBulkByScrollRequest(StreamInput in) throws IOException {
         super(in);
         searchRequest = new SearchRequest(in);
@@ -134,7 +142,13 @@ public abstract class AbstractBulkByScrollRequest<Self extends AbstractBulkByScr
             eligibleForRelocationOnShutdown = in.readBoolean();
         }
         if (in.getTransportVersion().supports(REINDEX_RELOCATION_RESUME)) {
-            resumeInfo = in.readOptionalWriteable(ResumeInfo::new);
+            var ri = in.readOptionalWriteable(ResumeInfo::new);
+            this.resumeInfo = ri;
+            if (ri != null) {
+                if (resumeInfo.relocationOrigin() != null) {
+                    this.relocationOrigin = resumeInfo.relocationOrigin();
+                }
+            }
         }
     }
 
@@ -437,9 +451,13 @@ public abstract class AbstractBulkByScrollRequest<Self extends AbstractBulkByScr
 
     /**
      * Sets resumption data to continue from a previously-acquired scroll ID.
+     * Also syncs {@link #relocationOrigin} from the resume info when present.
      */
     public Self setResumeInfo(ResumeInfo resumeInfo) {
         this.resumeInfo = Objects.requireNonNull(resumeInfo);
+        if (resumeInfo.relocationOrigin() != null) {
+            this.relocationOrigin = resumeInfo.relocationOrigin();
+        }
         return self();
     }
 
@@ -448,6 +466,16 @@ public abstract class AbstractBulkByScrollRequest<Self extends AbstractBulkByScr
      */
     public Optional<ResumeInfo> getResumeInfo() {
         return Optional.ofNullable(resumeInfo);
+    }
+
+    public Self setRelocationOrigin(ResumeInfo.RelocationOrigin relocationOrigin) {
+        this.relocationOrigin = Objects.requireNonNull(relocationOrigin);
+        return self();
+    }
+
+    @Nullable
+    public ResumeInfo.RelocationOrigin getRelocationOrigin() {
+        return relocationOrigin;
     }
 
     /**
@@ -475,12 +503,15 @@ public abstract class AbstractBulkByScrollRequest<Self extends AbstractBulkByScr
             .setRequestsPerSecond(requestsPerSecond / totalSlices)
             // Sub requests don't have workers
             .setSlices(1);
+        if (this.relocationOrigin != null) {
+            request.setRelocationOrigin(this.relocationOrigin);
+        }
         // Copy resume info for the slice from leader to the slice request
         if (this.getResumeInfo().isPresent()) {
             ResumeInfo resumeInfo = this.getResumeInfo().get();
             int sliceId = request.getSearchRequest().source().slice().getId();
             if (resumeInfo.isSliceCompleted(sliceId) == false) {
-                request.setResumeInfo(new ResumeInfo(resumeInfo.getSlice(sliceId).get().resumeInfo(), null));
+                request.setResumeInfo(new ResumeInfo(resumeInfo.relocationOrigin(), resumeInfo.getSlice(sliceId).get().resumeInfo(), null));
             }
         }
 
@@ -497,16 +528,7 @@ public abstract class AbstractBulkByScrollRequest<Self extends AbstractBulkByScr
 
     @Override
     public Task createTask(long id, String type, String action, TaskId parentTaskId, Map<String, String> headers) {
-        return new BulkByScrollTask(
-            id,
-            type,
-            action,
-            getDescription(),
-            parentTaskId,
-            headers,
-            eligibleForRelocationOnShutdown,
-            resumeInfo == null ? null : resumeInfo.relocationOrigin()
-        );
+        return new BulkByScrollTask(id, type, action, getDescription(), parentTaskId, headers, eligibleForRelocationOnShutdown, relocationOrigin);
     }
 
     @Override

@@ -143,10 +143,20 @@ public class Reindexer {
 
     public void initTask(BulkByScrollTask task, ReindexRequest request, ActionListener<Void> listener) {
         final ActionListener<Void> initListener = listener.delegateFailure((l, v) -> {
+            initRelocationOrigin(task, request);
             initTaskForRelocationIfEnabled(task, request);
             l.onResponse(v);
         });
         BulkByPaginatedSearchParallelizationHelper.initTaskState(task, request, client, initListener);
+    }
+
+    private void initRelocationOrigin(BulkByScrollTask task, ReindexRequest request) {
+        if (request.getRelocationOrigin() != null) {
+            return;
+        }
+        var selfOrigin = new ResumeInfo.RelocationOrigin(new TaskId(clusterService.localNode().getId(), task.getId()), task.getStartTime());
+        task.initSelfOrigin(selfOrigin);
+        request.setRelocationOrigin(selfOrigin);
     }
 
     public void execute(BulkByScrollTask task, ReindexRequest request, Client bulkClient, ActionListener<BulkByScrollResponse> listener) {
@@ -373,12 +383,7 @@ public class Reindexer {
                 return;
             }
             final ResumeInfo currentResumeInfo = response.getTaskResumeInfo().get();
-            final ResumeInfo.RelocationOrigin origin = request.getResumeInfo()
-                .map(r -> Objects.requireNonNull(r.relocationOrigin(), "relocation origin should be set if resume info is present"))
-                .orElseGet(
-                    () -> new ResumeInfo.RelocationOrigin(new TaskId(clusterService.localNode().getId(), task.getId()), task.getStartTime())
-                );
-            request.setResumeInfo(new ResumeInfo(origin, currentResumeInfo.worker(), currentResumeInfo.slices()));
+            request.setResumeInfo(new ResumeInfo(task.getRelocationOrigin(), currentResumeInfo.worker(), currentResumeInfo.slices()));
             final ResumeBulkByScrollRequest resumeRequest = new ResumeBulkByScrollRequest(request);
             final ActionListener<ResumeBulkByScrollResponse> relocationListener = ActionListener.wrap(resp -> {
                 final var relocatedException = new TaskRelocatedException();

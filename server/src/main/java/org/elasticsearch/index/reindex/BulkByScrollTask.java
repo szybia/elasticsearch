@@ -33,7 +33,6 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
@@ -58,7 +57,7 @@ public class BulkByScrollTask extends CancellableTask {
 
     private final boolean eligibleForRelocationOnShutdown;
     @Nullable
-    private final ResumeInfo.RelocationOrigin relocationOrigin;
+    private volatile ResumeInfo.RelocationOrigin relocationOrigin;
     private volatile LeaderBulkByScrollTaskState leaderState;
     private volatile WorkerBulkByScrollTaskState workerState;
     private volatile boolean relocationRequested = false;
@@ -227,9 +226,19 @@ public class BulkByScrollTask extends CancellableTask {
         return relocationRequested;
     }
 
-    /** Returns the relocation origin if this task is a relocated continuation. */
-    public Optional<ResumeInfo.RelocationOrigin> getRelocationOrigin() {
-        return Optional.ofNullable(relocationOrigin);
+    /**
+     * Sets the self-origin for a first-run (non-relocated) task. Must only be called once, and only when no origin was provided at
+     * construction time. After this call, {@link #getRelocationOrigin()} is guaranteed non-null.
+     */
+    public void initSelfOrigin(ResumeInfo.RelocationOrigin origin) {
+        assert this.relocationOrigin == null : "initSelfOrigin called but relocationOrigin is already set";
+        this.relocationOrigin = Objects.requireNonNull(origin);
+    }
+
+    /** Returns the relocation origin for this task. Always non-null after task initialisation. */
+    public ResumeInfo.RelocationOrigin getRelocationOrigin() {
+        assert relocationOrigin != null : "relocationOrigin has not been initialised";
+        return relocationOrigin;
     }
 
     /**
