@@ -30,6 +30,7 @@ import org.elasticsearch.index.reindex.ResumeBulkByScrollResponse;
 import org.elasticsearch.index.reindex.ResumeInfo;
 import org.elasticsearch.index.reindex.ResumeReindexAction;
 import org.elasticsearch.script.ScriptService;
+import org.elasticsearch.tasks.Task;
 import org.elasticsearch.tasks.TaskId;
 import org.elasticsearch.tasks.TaskManager;
 import org.elasticsearch.test.ESTestCase;
@@ -179,7 +180,7 @@ public class ReindexerTests extends ESTestCase {
         assumeTrue("reindex resilience enabled", ReindexPlugin.REINDEX_RESILIENCE_ENABLED);
         final long parentTaskId = 99;
         final BulkByScrollTask leaderTask = new BulkByScrollTask(
-            parentTaskId,
+            new TaskId(randomAlphaOfLength(5), parentTaskId),
             "test_type",
             "test_action",
             "test",

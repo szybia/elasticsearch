@@ -33,7 +33,6 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
@@ -57,25 +56,38 @@ import static org.elasticsearch.core.TimeValue.timeValueNanos;
 public class BulkByScrollTask extends CancellableTask {
 
     private final boolean eligibleForRelocationOnShutdown;
-    @Nullable
     private final ResumeInfo.RelocationOrigin relocationOrigin;
     private volatile LeaderBulkByScrollTaskState leaderState;
     private volatile WorkerBulkByScrollTaskState workerState;
     private volatile boolean relocationRequested = false;
 
     public BulkByScrollTask(
-        long id,
+        long taskId,
         String type,
         String action,
         String description,
         TaskId parentTaskId,
         Map<String, String> headers,
         boolean eligibleForRelocationOnShutdown,
-        @Nullable ResumeInfo.RelocationOrigin relocationOrigin
+        @Nullable ResumeInfo.RelocationOrigin existingOrigin
     ) {
-        super(id, type, action, description, parentTaskId, headers);
+        super(taskId, type, action, description, parentTaskId, headers);
+        throw new IllegalStateException("test");
+    }
+
+    public BulkByScrollTask(
+        TaskId taskId,
+        String type,
+        String action,
+        String description,
+        TaskId parentTaskId,
+        Map<String, String> headers,
+        boolean eligibleForRelocationOnShutdown,
+        @Nullable ResumeInfo.RelocationOrigin existingOrigin
+    ) {
+        super(taskId.getId(), type, action, description, parentTaskId, headers);
         this.eligibleForRelocationOnShutdown = eligibleForRelocationOnShutdown;
-        this.relocationOrigin = relocationOrigin;
+        this.relocationOrigin = existingOrigin != null ? existingOrigin : new ResumeInfo.RelocationOrigin(taskId, this.startTime);
     }
 
     @Override
@@ -227,9 +239,9 @@ public class BulkByScrollTask extends CancellableTask {
         return relocationRequested;
     }
 
-    /** Returns the relocation origin if this task is a relocated continuation. */
-    public Optional<ResumeInfo.RelocationOrigin> getRelocationOrigin() {
-        return Optional.ofNullable(relocationOrigin);
+    /** Returns the relocation origin for this task — always non-null. */
+    public ResumeInfo.RelocationOrigin getRelocationOrigin() {
+        return relocationOrigin;
     }
 
     /**
