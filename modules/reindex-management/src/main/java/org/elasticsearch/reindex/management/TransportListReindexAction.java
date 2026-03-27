@@ -27,6 +27,7 @@ import org.elasticsearch.tasks.TaskInfo;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.transport.TransportService;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -59,6 +60,25 @@ public class TransportListReindexAction extends TransportTasksProjectAction<Task
             transportService.getThreadPool().executor(ThreadPool.Names.MANAGEMENT),
             projectResolver
         );
+    }
+
+    /**
+     * Performs two sequential fanouts to all nodes, merging the results. This "double-broadcast" ensures that a task
+     * undergoing relocation is visible in at least one of the two rounds, preventing the race where a single fanout
+     * reaches the source node after departure and the destination node before arrival.
+     */
+    @Override
+    protected void doExecute(Task task, ListReindexRequest request, ActionListener<ListReindexResponse> listener) {
+        super.doExecute(task, request, listener.delegateFailureAndWrap((delegate, firstResponse) -> {
+            super.doExecute(task, request, delegate.delegateFailureAndWrap((delegate2, secondResponse) -> {
+                final List<TaskInfo> combined = new ArrayList<>(secondResponse.getTasks().size() + firstResponse.getTasks().size());
+                combined.addAll(secondResponse.getTasks());
+                combined.addAll(firstResponse.getTasks());
+                delegate2.onResponse(
+                    new ListReindexResponse(deduplicateTasks(combined), secondResponse.getTaskFailures(), secondResponse.getNodeFailures())
+                );
+            }));
+        }));
     }
 
     @Override

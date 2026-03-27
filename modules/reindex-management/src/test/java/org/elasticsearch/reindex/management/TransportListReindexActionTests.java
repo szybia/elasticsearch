@@ -13,6 +13,7 @@ import org.elasticsearch.tasks.TaskId;
 import org.elasticsearch.tasks.TaskInfo;
 import org.elasticsearch.test.ESTestCase;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -77,6 +78,55 @@ public class TransportListReindexActionTests extends ESTestCase {
         assertThat(result, hasSize(2));
         assertThat(result.get(0), sameInstance(dupFirst));
         assertThat(result.get(1), sameInstance(unique));
+    }
+
+    public void testDeduplicateAcrossListsPrefersMostRecent() {
+        final TaskId id = new TaskId("node1", randomNonNegativeLong());
+        final TaskInfo fromFirstList = taskInfo(id);
+        final TaskInfo fromSecondList = taskInfo(id);
+
+        final List<TaskInfo> combined = new ArrayList<>();
+        combined.add(fromSecondList);
+        combined.add(fromFirstList);
+        final List<TaskInfo> result = TransportListReindexAction.deduplicateTasks(combined);
+        assertThat(result, hasSize(1));
+        assertThat(result.getFirst(), sameInstance(fromSecondList));
+    }
+
+    public void testMergeCapturesTasksFromBothLists() {
+        final TaskId idA = new TaskId("node1", randomNonNegativeLong());
+        final TaskId idB = new TaskId("node2", randomNonNegativeLong());
+        final TaskInfo onlyInFirst = taskInfo(idA);
+        final TaskInfo onlyInSecond = taskInfo(idB);
+
+        final List<TaskInfo> combined = new ArrayList<>();
+        combined.add(onlyInSecond);
+        combined.add(onlyInFirst);
+        final List<TaskInfo> result = TransportListReindexAction.deduplicateTasks(combined);
+        assertThat(result, hasSize(2));
+        assertThat(result.get(0), sameInstance(onlyInSecond));
+        assertThat(result.get(1), sameInstance(onlyInFirst));
+    }
+
+    public void testMergeDeduplicatesAcrossListsWithUniqueEntries() {
+        final TaskId sharedId = new TaskId("node1", randomNonNegativeLong());
+        final TaskId uniqueFirstId = new TaskId("node2", randomNonNegativeLong());
+        final TaskId uniqueSecondId = new TaskId("node3", randomNonNegativeLong());
+        final TaskInfo sharedFirst = taskInfo(sharedId);
+        final TaskInfo sharedSecond = taskInfo(sharedId);
+        final TaskInfo uniqueFirst = taskInfo(uniqueFirstId);
+        final TaskInfo uniqueSecond = taskInfo(uniqueSecondId);
+
+        final List<TaskInfo> combined = new ArrayList<>();
+        combined.add(sharedSecond);
+        combined.add(uniqueSecond);
+        combined.add(sharedFirst);
+        combined.add(uniqueFirst);
+        final List<TaskInfo> result = TransportListReindexAction.deduplicateTasks(combined);
+        assertThat(result, hasSize(3));
+        assertThat(result.get(0), sameInstance(sharedSecond));
+        assertThat(result.get(1), sameInstance(uniqueSecond));
+        assertThat(result.get(2), sameInstance(uniqueFirst));
     }
 
     private static TaskInfo taskInfo(final TaskId taskId) {

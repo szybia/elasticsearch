@@ -16,6 +16,7 @@ import org.elasticsearch.tasks.TaskId;
 import org.elasticsearch.test.ESTestCase;
 
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 import static org.hamcrest.Matchers.is;
 
@@ -46,7 +47,7 @@ public class ShutdownPrepareServiceTests extends ESTestCase {
             TaskId.EMPTY_TASK_ID,
             Map.of(),
             true,
-            randomOrigin()
+            null
         );
         task.setWorkerCount(randomIntBetween(1, 20));
         ShutdownPrepareService.maybeRequestRelocationForBulkByScroll(task);
@@ -78,10 +79,61 @@ public class ShutdownPrepareServiceTests extends ESTestCase {
             new TaskId("localNode", randomLong()),
             Map.of(),
             true,
-            randomOrigin()
+            null
         );
         task.setWorker(randomFloat(), randomInt());
         ShutdownPrepareService.maybeRequestRelocationForBulkByScroll(task);
+        assertThat(task.isRelocationRequested(), is(true));
+    }
+
+    public void testMaybeRequestRelocationForBulkByScroll_skipsRecentlyRelocatedTask() {
+        BulkByScrollTask task = new BulkByScrollTask(
+            randomTaskId(),
+            "transport",
+            "test:action/name",
+            "description",
+            TaskId.EMPTY_TASK_ID,
+            Map.of(),
+            true,
+            new ResumeInfo.RelocationOrigin(new TaskId(randomAlphaOfLength(10), randomNonNegativeLong()), randomNonNegativeLong())
+        );
+        task.setWorkerCount(randomIntBetween(1, 20));
+        assertThat(task.isRelocatedTask(), is(true));
+        ShutdownPrepareService.maybeRequestRelocationForBulkByScroll(task, TimeUnit.MINUTES.toNanos(10));
+        assertThat(task.isRelocationRequested(), is(false));
+    }
+
+    public void testMaybeRequestRelocationForBulkByScroll_allowsOldRelocatedTask() {
+        BulkByScrollTask task = new BulkByScrollTask(
+            randomTaskId(),
+            "transport",
+            "test:action/name",
+            "description",
+            TaskId.EMPTY_TASK_ID,
+            Map.of(),
+            true,
+            new ResumeInfo.RelocationOrigin(new TaskId(randomAlphaOfLength(10), randomNonNegativeLong()), randomNonNegativeLong())
+        );
+        task.setWorkerCount(randomIntBetween(1, 20));
+        assertThat(task.isRelocatedTask(), is(true));
+        ShutdownPrepareService.maybeRequestRelocationForBulkByScroll(task, 0L);
+        assertThat(task.isRelocationRequested(), is(true));
+    }
+
+    public void testMaybeRequestRelocationForBulkByScroll_cooldownDoesNotApplyToNonRelocatedTask() {
+        BulkByScrollTask task = new BulkByScrollTask(
+            randomTaskId(),
+            "transport",
+            "test:action/name",
+            "description",
+            TaskId.EMPTY_TASK_ID,
+            Map.of(),
+            true,
+            null
+        );
+        task.setWorkerCount(randomIntBetween(1, 20));
+        assertThat(task.isRelocatedTask(), is(false));
+        ShutdownPrepareService.maybeRequestRelocationForBulkByScroll(task, TimeUnit.MINUTES.toNanos(10));
         assertThat(task.isRelocationRequested(), is(true));
     }
 

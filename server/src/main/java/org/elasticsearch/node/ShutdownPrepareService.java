@@ -47,6 +47,12 @@ import java.util.stream.Collectors;
  */
 public class ShutdownPrepareService {
 
+    /**
+     * Minimum time a relocated task must run before it can be relocated again. Prevents back-to-back relocations
+     * that could cause the task to be invisible to the double-broadcast list API.
+     */
+    static final long MIN_RE_RELOCATION_NANOS = TimeUnit.SECONDS.toNanos(5);
+
     private record ShutdownHook(String name, Runnable action) {}
 
     public static final Setting<TimeValue> MAXIMUM_SHUTDOWN_TIMEOUT_SETTING = Setting.positiveTimeSetting(
@@ -211,8 +217,17 @@ public class ShutdownPrepareService {
 
     // package-private for tests
     static void maybeRequestRelocationForBulkByScroll(Task task) {
+        maybeRequestRelocationForBulkByScroll(task, MIN_RE_RELOCATION_NANOS);
+    }
+
+    // visible for tests
+    static void maybeRequestRelocationForBulkByScroll(Task task, long minReRelocationNanos) {
         if (task instanceof BulkByScrollTask bulkByScrollTask) {
             if (bulkByScrollTask.isEligibleForRelocationOnShutdown() && bulkByScrollTask.isRelocationRequested() == false) {
+                if (bulkByScrollTask.isRelocatedTask() && System.nanoTime() - bulkByScrollTask.getStartTimeNanos() < minReRelocationNanos) {
+                    logger.debug("skipping re-relocation for recently-relocated task [{}]", bulkByScrollTask.getId());
+                    return;
+                }
                 if (bulkByScrollTask.isLeader()) {
                     logger.info("Requesting relocation task for leader bulk-by-scroll task {} and its workers", bulkByScrollTask.getId());
                 } else {
