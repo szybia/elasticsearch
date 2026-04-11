@@ -543,7 +543,7 @@ public abstract class AbstractBulkByScrollRequest<Self extends AbstractBulkByScr
             parentTaskId,
             headers,
             eligibleForRelocationOnShutdown,
-            resumeInfo == null ? null : resumeInfo.relocationOrigin()
+            resumeInfo
         );
     }
 

@@ -59,6 +59,7 @@ public class BulkByScrollTask extends CancellableTask {
     private final boolean relocatedTask;
     // if task is a slice, RelocationOrigin won't be correct because it won't be the leader here, but it's overridden in the leader state
     private final ResumeInfo.RelocationOrigin relocationOrigin;
+    private final long originalWorkerStartTimeMillis;
     private volatile LeaderBulkByScrollTaskState leaderState;
     private volatile WorkerBulkByScrollTaskState workerState;
     private volatile boolean relocationRequested = false;
@@ -71,12 +72,17 @@ public class BulkByScrollTask extends CancellableTask {
         TaskId parentTaskId,
         Map<String, String> headers,
         boolean eligibleForRelocationOnShutdown,
-        @Nullable ResumeInfo.RelocationOrigin relocationOrigin
+        @Nullable ResumeInfo resumeInfo
     ) {
         super(taskId.getId(), type, action, description, parentTaskId, headers);
         this.eligibleForRelocationOnShutdown = eligibleForRelocationOnShutdown;
-        this.relocatedTask = relocationOrigin != null;
-        this.relocationOrigin = relocationOrigin != null ? relocationOrigin : new ResumeInfo.RelocationOrigin(taskId, this.startTime);
+        this.relocatedTask = resumeInfo != null;
+        this.relocationOrigin = resumeInfo != null
+            ? resumeInfo.relocationOrigin()
+            : new ResumeInfo.RelocationOrigin(taskId, this.startTime);
+        this.originalWorkerStartTimeMillis = resumeInfo != null && resumeInfo.worker() != null
+            ? resumeInfo.worker().startTimeEpochMillis()
+            : this.startTime;
     }
 
     @Override
@@ -236,6 +242,62 @@ public class BulkByScrollTask extends CancellableTask {
     /** Returns true if this task was created via relocation from another node. */
     public boolean isRelocatedTask() {
         return relocatedTask;
+    }
+
+    /**
+     * Rewrites the given {@link TaskInfo} so that relocated tasks present stable, user-facing IDs and
+     * timing that match the original pre-relocation task.
+     *
+     * <ul>
+     * <li><b>Non-relocated parent</b>: relocationOrigin is self-referencing, so the rewrite is a NOP.</li>
+     * <li><b>Relocated parent</b>: rewrites taskId, nodeId, startTime, runningTimeNanos from the origin.</li>
+     * <li><b>Non-relocated slice</b>: returns unchanged.</li>
+     * <li><b>Relocated slice</b>: rewrites parentTaskId, startTime, runningTimeNanos. Keeps real taskId
+     *     so the slice remains addressable for GET/cancel.</li>
+     * </ul>
+     */
+    public TaskInfo rewriteTaskInfoForRelocation(TaskInfo info) {
+        if (getParentTaskId().isSet()) {
+            if (isRelocatedTask() == false) {
+                return info;
+            }
+            ResumeInfo.RelocationOrigin origin = relocationOrigin();
+            long adjustedRunningTimeNanos = info.runningTimeNanos()
+                + TimeUnit.MILLISECONDS.toNanos(info.startTime() - originalWorkerStartTimeMillis);
+            return new TaskInfo(
+                info.taskId(),
+                info.type(),
+                info.node(),
+                info.action(),
+                info.description(),
+                info.status(),
+                originalWorkerStartTimeMillis,
+                adjustedRunningTimeNanos,
+                info.cancellable(),
+                info.cancelled(),
+                origin.originalTaskId(),
+                info.headers()
+            );
+        }
+        ResumeInfo.RelocationOrigin origin = relocationOrigin();
+        TaskId originalId = origin.originalTaskId();
+        long originalStartMillis = origin.originalStartTimeMillis();
+        long adjustedRunningTimeNanos = info.runningTimeNanos()
+            + TimeUnit.MILLISECONDS.toNanos(info.startTime() - originalStartMillis);
+        return new TaskInfo(
+            originalId,
+            info.type(),
+            originalId.getNodeId(),
+            info.action(),
+            info.description(),
+            info.status(),
+            originalStartMillis,
+            adjustedRunningTimeNanos,
+            info.cancellable(),
+            info.cancelled(),
+            info.parentTaskId(),
+            info.headers()
+        );
     }
 
     /**

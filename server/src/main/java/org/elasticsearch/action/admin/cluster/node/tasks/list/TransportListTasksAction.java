@@ -18,22 +18,29 @@ import org.elasticsearch.action.support.ContextPreservingActionListener;
 import org.elasticsearch.action.support.ListenableActionFuture;
 import org.elasticsearch.action.support.tasks.TransportTasksAction;
 import org.elasticsearch.cluster.service.ClusterService;
+import org.elasticsearch.common.regex.Regex;
+import org.elasticsearch.common.util.CollectionUtils;
 import org.elasticsearch.common.util.concurrent.ConcurrentCollections;
 import org.elasticsearch.common.util.concurrent.EsExecutors;
 import org.elasticsearch.core.AbstractRefCounted;
 import org.elasticsearch.core.RefCounted;
 import org.elasticsearch.core.TimeValue;
+import org.elasticsearch.index.reindex.BulkByScrollTask;
+import org.elasticsearch.index.reindex.ReindexAction;
 import org.elasticsearch.injection.guice.Inject;
 import org.elasticsearch.tasks.CancellableTask;
 import org.elasticsearch.tasks.RemovedTaskListener;
 import org.elasticsearch.tasks.Task;
 import org.elasticsearch.tasks.TaskCancelledException;
+import org.elasticsearch.tasks.TaskId;
 import org.elasticsearch.tasks.TaskInfo;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.transport.TransportService;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -78,13 +85,54 @@ public class TransportListTasksAction extends TransportTasksAction<Task, ListTas
 
     @Override
     protected void taskOperation(CancellableTask actionTask, ListTasksRequest request, Task task, ActionListener<TaskInfo> listener) {
-        listener.onResponse(task.taskInfo(clusterService.localNode().getId(), request.getDetailed()));
+        TaskInfo info = task.taskInfo(clusterService.localNode().getId(), request.getDetailed());
+        if (task instanceof BulkByScrollTask bbs) {
+            info = bbs.rewriteTaskInfoForRelocation(info);
+        }
+        listener.onResponse(info);
     }
 
     @Override
     protected void doExecute(Task task, ListTasksRequest request, ActionListener<ListTasksResponse> listener) {
         assert task instanceof CancellableTask;
-        super.doExecute(task, request, listener);
+        if (couldMatchReindexAction(request) == false) {
+            super.doExecute(task, request, listener);
+            return;
+        }
+        TimeValue originalTimeout = request.getTimeout();
+        long deadline = System.nanoTime() + requireNonNullElse(originalTimeout, DEFAULT_WAIT_FOR_COMPLETION_TIMEOUT).nanos();
+        request.setTimeout(TimeValue.timeValueNanos(requireNonNullElse(originalTimeout, DEFAULT_WAIT_FOR_COMPLETION_TIMEOUT).nanos() / 2));
+        super.doExecute(task, request, listener.delegateFailureAndWrap((first, firstResponse) -> {
+            long remaining = Math.max(deadline - System.nanoTime(), 0);
+            request.setTimeout(TimeValue.timeValueNanos(remaining));
+            super.doExecute(task, request, first.delegateFailureAndWrap((second, secondResponse) -> {
+                List<TaskInfo> combined = new ArrayList<>(secondResponse.getTasks().size() + firstResponse.getTasks().size());
+                combined.addAll(secondResponse.getTasks());
+                combined.addAll(firstResponse.getTasks());
+                second.onResponse(
+                    new ListTasksResponse(deduplicateTasks(combined), secondResponse.getTaskFailures(), secondResponse.getNodeFailures())
+                );
+            }));
+        }));
+    }
+
+    private static boolean couldMatchReindexAction(ListTasksRequest request) {
+        String[] actions = request.getActions();
+        if (CollectionUtils.isEmpty(actions)) {
+            return true;
+        }
+        return Regex.simpleMatch(actions, ReindexAction.NAME);
+    }
+
+    static List<TaskInfo> deduplicateTasks(List<TaskInfo> tasks) {
+        if (tasks.size() <= 1) {
+            return tasks;
+        }
+        Map<TaskId, TaskInfo> seen = new LinkedHashMap<>(tasks.size());
+        for (TaskInfo task : tasks) {
+            seen.putIfAbsent(task.taskId(), task);
+        }
+        return seen.size() == tasks.size() ? tasks : List.copyOf(seen.values());
     }
 
     @Override
