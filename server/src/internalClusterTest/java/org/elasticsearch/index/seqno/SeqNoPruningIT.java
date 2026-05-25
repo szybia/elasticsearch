@@ -39,9 +39,11 @@ import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import static org.elasticsearch.index.seqno.SequenceNumbersTestUtils.assertMinRetainedSeqNoAdvanced;
 import static org.elasticsearch.index.seqno.SequenceNumbersTestUtils.assertRetentionLeasesAdvanced;
 import static org.elasticsearch.index.seqno.SequenceNumbersTestUtils.assertShardsHaveSeqNoDocValues;
 import static org.elasticsearch.index.seqno.SequenceNumbersTestUtils.assertShardsSeqNoDocValuesCount;
+import static org.elasticsearch.index.seqno.SequenceNumbersTestUtils.persistGlobalCheckpointOnPrimaryShards;
 import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertAcked;
 import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertHitCount;
 import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertNoFailures;
@@ -198,6 +200,20 @@ public class SeqNoPruningIT extends ESIntegTestCase {
                 }
             }
         }));
+
+        persistGlobalCheckpointOnPrimaryShards(indexName);
+        indicesAdmin().prepareFlush(indexName).setForce(true).get();
+        assertMinRetainedSeqNoAdvanced(internalCluster(), indexName, retentionLeaseSeqNo);
+
+        // Race-B diagnostic: if an auto-merge has already consolidated all segments into 1, the upcoming
+        // forceMerge will be a no-op and the pruning assertion below will fail with all docs retained.
+        // Auto-merges that ran before the explicit force flush above would have observed
+        // minRetainedSeqNo == 0 and skipped pruning (cardinality == maxDoc in PruningMergePolicy).
+        assertThat(
+            "expected multiple segments before forceMerge (otherwise the merge is a no-op and pruning is skipped)",
+            indicesAdmin().prepareStats(indexName).clear().setSegments(true).get().getPrimaries().getSegments().getCount(),
+            greaterThan(1L)
+        );
 
         var forceMerge = indicesAdmin().prepareForceMerge(indexName).setMaxNumSegments(1).get();
         assertThat(forceMerge.getFailedShards(), equalTo(0));
