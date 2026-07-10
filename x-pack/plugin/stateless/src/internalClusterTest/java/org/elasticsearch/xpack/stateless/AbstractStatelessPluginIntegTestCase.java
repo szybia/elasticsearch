@@ -568,12 +568,48 @@ public abstract class AbstractStatelessPluginIntegTestCase extends ESIntegTestCa
         long maxNumberOfFailures,
         Set<String> excludedExecutorNamesList
     ) {
+        setNodeRepositoryFailureStrategy(
+            node,
+            failReads,
+            failWrites,
+            filePatternPerPurposeToFail,
+            maxNumberOfFailures,
+            excludedExecutorNamesList,
+            null
+        );
+    }
+
+    /// [repro] Temporary overload for #153393 diagnosis (remove after diagnosis). Same as the 6-argument variant, but if
+    /// `onFirstBlockedWrite` is non-null it is counted down on the first blocked (pattern-matched) blob operation. This is
+    /// the intended synchronization hook for the eventual Branch-A fix, which must await the blocked gen N+1 write before
+    /// starting the network disruption. It is intentionally unused during the diagnostic run.
+    protected void setNodeRepositoryFailureStrategy(
+        String node,
+        boolean failReads,
+        boolean failWrites,
+        Map<OperationPurpose, String> filePatternPerPurposeToFail,
+        long maxNumberOfFailures,
+        Set<String> excludedExecutorNamesList,
+        @Nullable CountDownLatch onFirstBlockedWrite
+    ) {
         setNodeRepositoryStrategy(node, new StatelessMockRepositoryStrategy() {
             private final AtomicLong failureCounter = new AtomicLong();
 
             private void failIfNeeded(OperationPurpose purpose, String blobName) throws IOException {
                 String filePattern = filePatternPerPurposeToFail.get(purpose);
                 if (filePattern != null && blobName.matches(filePattern)) {
+                    // [repro] Temporary diagnostic for #153393 (remove after diagnosis): make every matched (blocked) blob
+                    // operation visible, so we can confirm whether the isolated node ever attempts the blocked upload.
+                    logger.info(
+                        "[repro] blocking blob op purpose={} blob={} attempt={} thread={}",
+                        purpose,
+                        blobName,
+                        failureCounter.get() + 1,
+                        Thread.currentThread().getName()
+                    );
+                    if (onFirstBlockedWrite != null) {
+                        onFirstBlockedWrite.countDown();
+                    }
                     if (excludedExecutorNamesList.contains(EsExecutors.executorName(Thread.currentThread())) == false) {
                         if (failureCounter.incrementAndGet() <= maxNumberOfFailures) {
                             throw new IOException("Random IOException");

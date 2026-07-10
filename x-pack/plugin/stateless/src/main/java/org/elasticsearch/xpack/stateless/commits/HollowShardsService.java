@@ -373,6 +373,8 @@ public class HollowShardsService extends AbstractLifecycleComponent implements M
             threadPool.generic().execute(new AbstractRunnable() {
                 @Override
                 protected void doRun() {
+                    // [repro] Temporary phase marker for #153393 (remove after diagnosis).
+                    logger.info("[repro] {} unhollow: entered (generic pool running unhollow task)", shardId);
                     long startTime = relativeTimeSupplierInMillis.getAsLong();
                     final var indexService = indicesService.indexServiceSafe(shardId.getIndex());
                     final var indexShard = indexService.getShard(shardId.id());
@@ -404,6 +406,13 @@ public class HollowShardsService extends AbstractLifecycleComponent implements M
                             var batchedCompoundCommit = state.latestCommit();
                             StatelessCompoundCommit last = batchedCompoundCommit.lastCompoundCommit();
 
+                            // [repro] Temporary phase marker for #153393 (remove after diagnosis).
+                            logger.info(
+                                "[repro] {} unhollow: object-store IndexingShardState read (latestCommit {})",
+                                shardId,
+                                last.primaryTermAndGeneration()
+                            );
+
                             Map<String, BlobFileRanges> blobFileRanges = new HashMap<>(state.blobFileRanges());
 
                             // If after hollowing the recovery failed, the hollow shard will stay in the source node where operations
@@ -422,6 +431,8 @@ public class HollowShardsService extends AbstractLifecycleComponent implements M
                             // Pre-warm the cache for the new index engine
                             indexShardCacheWarmer.preWarmIndexShardCacheForUnhollowing(store, indexShard, state);
 
+                            // [repro] Temporary phase marker for #153393 (remove after diagnosis).
+                            logger.info("[repro] {} unhollow: before resetEngine", shardId);
                             indexShard.resetEngine(engine -> {
                                 assert assertIndexEngineLastCommitHollow(shardId, engine, true);
                                 assert engine.getEngineConfig().getEngineResetLock().isWriteLockedByCurrentThread() : shardId;
@@ -432,6 +443,8 @@ public class HollowShardsService extends AbstractLifecycleComponent implements M
                             logger.debug(() -> "Flushing shard [" + shardId + "] to produce a blob with a local translog node id");
                             indexShard.withEngine(engine -> {
                                 assert engine instanceof IndexEngine : shardId + ": expected IndexEngine but was " + engine.getClass();
+                                // [repro] Temporary phase marker for #153393 (remove after diagnosis).
+                                logger.info("[repro] {} unhollow: before flush", shardId);
                                 engine.flush(true, true, ActionListener.wrap(flushResult -> {
                                     assert flushResult.skippedDueToCollision() == false : "Flush was skipped";
                                     removeHollowShard(indexShard, "unhollowing gen " + flushResult.generation());
@@ -492,6 +505,8 @@ public class HollowShardsService extends AbstractLifecycleComponent implements M
                     // An unhollowing may fail with legitimate reasons, e.g., if there is an index deletion or shard closure.
                     // It may take a bit of time until the shard is completely closed and the ingestion blocker is removed.
                     // If unhollowing fails for other reasons, we fail the shard as a last resort to release the ingestion blocker.
+                    // [repro] Temporary phase marker for #153393 (remove after diagnosis).
+                    logger.info("[repro] {} unhollow: FAILED", shardId, e);
                     logger.debug("unhollowing failed on shard " + shardId, e);
                     var indexShard = indicesService.getShardOrNull(shardId);
                     if (indexShard == null || indexShard.state() == IndexShardState.CLOSED) {

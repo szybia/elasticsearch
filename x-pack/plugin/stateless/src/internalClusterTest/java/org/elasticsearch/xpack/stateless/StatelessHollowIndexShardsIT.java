@@ -2371,6 +2371,17 @@ public class StatelessHollowIndexShardsIT extends AbstractStatelessPluginIntegTe
         assertNoFailures(bulkFuture.get());
     }
 
+    // [repro] Temporary diagnostics for https://github.com/elastic/elasticsearch/issues/153393 (remove after diagnosis).
+    @TestLogging(
+        reason = "diagnose #153393 hollow-shard flake: make node B's unhollow/upload lifecycle visible during isolation",
+        value = "org.elasticsearch.xpack.stateless.commits.HollowShardsService:TRACE,"
+            + "org.elasticsearch.xpack.stateless.commits.StatelessCommitService:DEBUG,"
+            + "org.elasticsearch.xpack.stateless.commits.BatchedCompoundCommitUploadTask:TRACE,"
+            + "org.elasticsearch.xpack.stateless.engine.IndexEngine:DEBUG,"
+            + "org.elasticsearch.xpack.stateless.engine.HollowIndexEngine:DEBUG,"
+            + "org.elasticsearch.xpack.stateless.engine.translog.TranslogReplicator:DEBUG,"
+            + "org.elasticsearch.action.support.RetryableAction:DEBUG"
+    )
     public void testHollowShardFailsIfSearchShardRegistersNewerCommit() throws Exception {
         var nodeSettings = Settings.builder()
             .put(disableIndexingDiskAndMemoryControllersNodeSettings())
@@ -2456,7 +2467,60 @@ public class StatelessHollowIndexShardsIT extends AbstractStatelessPluginIntegTe
 
         // Let the unhollowing complete and wait until the dirty documents are ingested on the isolated node B
         setNodeRepositoryStrategy(indexNodeB, StatelessMockRepositoryStrategy.DEFAULT);
-        assertBusy(() -> { assertThat(indexShardB.docStats().getCount(), equalTo((long) numDocs * 2)); });
+        // [repro] Temporary diagnostic probe for #153393 (remove after diagnosis): poll for up to 60s and log node B's
+        // unhollow progress each iteration, so we can see whether B ever reaches 2N while still network-isolated (store now
+        // unblocked, partition not yet healed) or only after cleanup heals the partition. Do NOT add any blocking wait before
+        // startDisrupting() above; that would mask the race we are trying to observe.
+        // The pass/fail verdict is still taken at the original 10s deadline (reachedWithin10s below), so a reproduction always
+        // fails the test (green == healthy, red == reproduced). The window up to 60s only adds diagnostics to distinguish
+        // Branch C (2N reached late while isolated) from Branch D (2N never reached while isolated).
+        final long probeStart = System.nanoTime();
+        final long probeDeadlineNanos = probeStart + TimeValue.timeValueSeconds(60).nanos();
+        final long tenSecondsMs = TimeValue.timeValueSeconds(10).millis();
+        long reached2NAtMs = -1;
+        boolean reproducedLogged = false;
+        while (System.nanoTime() < probeDeadlineNanos) {
+            final long elapsedMs = (System.nanoTime() - probeStart) / 1_000_000L;
+            final long count = indexShardB.docStats().getCount();
+            final boolean stillHollow = hollowShardsServiceB.isHollowShard(indexShardB.shardId());
+            String latestUploadedGen;
+            try {
+                latestUploadedGen = commitServiceB.getLatestUploadedBcc(indexShardB.shardId())
+                    .lastCompoundCommit()
+                    .primaryTermAndGeneration()
+                    .toString();
+            } catch (Exception e) {
+                latestUploadedGen = "<error: " + e.getMessage() + ">";
+            }
+            logger.info(
+                "[repro] t={}s count={}/{} hollow={} latestUploadedGen={} bulkDone={}",
+                elapsedMs / 1000.0,
+                count,
+                numDocs * 2,
+                stillHollow,
+                latestUploadedGen,
+                bulkFuture.isDone()
+            );
+            if (count == numDocs * 2) {
+                reached2NAtMs = elapsedMs;
+                break;
+            }
+            // Loud one-off marker the moment the original 10s deadline is missed, so a live tail flags the reproduction
+            // immediately instead of only via the assertion up to 50s later.
+            if (reproducedLogged == false && elapsedMs >= tenSecondsMs) {
+                reproducedLogged = true;
+                logger.error("[repro] REPRODUCED #153393: node B still at {}/{} after 10s; observing until 60s", count, numDocs * 2);
+            }
+            Thread.sleep(500);
+        }
+        final boolean reachedWithin10s = reached2NAtMs >= 0 && reached2NAtMs <= tenSecondsMs;
+        final String verdict = reached2NAtMs < 0
+            ? "never within 60s (Branch D: 2N only after heal / hard stall)"
+            : reached2NAtMs <= tenSecondsMs
+                ? "at " + reached2NAtMs + "ms (within 10s, healthy)"
+                : "at " + reached2NAtMs + "ms (Branch C: unhollow completed while isolated but later than 10s)";
+        // Verdict taken at the original 10s deadline so a reproduction reliably fails the test.
+        assertThat("[repro] #153393 verdict: node B reached 2N " + verdict, reachedWithin10s, equalTo(true));
 
         // Flush as well to ensure that the dirty unacknowledged documents are uploaded to the object store
         client(indexNodeB).admin().indices().prepareFlush(indexName).setForce(true).execute();
