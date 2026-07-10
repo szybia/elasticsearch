@@ -2373,14 +2373,17 @@ public class StatelessHollowIndexShardsIT extends AbstractStatelessPluginIntegTe
 
     // [repro] Temporary diagnostics for https://github.com/elastic/elasticsearch/issues/153393 (remove after diagnosis).
     @TestLogging(
-        reason = "diagnose #153393 hollow-shard flake: make node B's unhollow/upload lifecycle visible during isolation",
+        reason = "diagnose #153393 hollow-shard flake: make node B's unhollow/upload lifecycle and the bulk write-path "
+            + "(coordinator cluster blocks / reroute retries) visible during isolation",
         value = "org.elasticsearch.xpack.stateless.commits.HollowShardsService:TRACE,"
             + "org.elasticsearch.xpack.stateless.commits.StatelessCommitService:DEBUG,"
             + "org.elasticsearch.xpack.stateless.commits.BatchedCompoundCommitUploadTask:TRACE,"
             + "org.elasticsearch.xpack.stateless.engine.IndexEngine:DEBUG,"
             + "org.elasticsearch.xpack.stateless.engine.HollowIndexEngine:DEBUG,"
             + "org.elasticsearch.xpack.stateless.engine.translog.TranslogReplicator:DEBUG,"
-            + "org.elasticsearch.action.support.RetryableAction:DEBUG"
+            + "org.elasticsearch.action.support.RetryableAction:DEBUG,"
+            + "org.elasticsearch.action.bulk:TRACE,"
+            + "org.elasticsearch.action.support.replication:TRACE"
     )
     public void testHollowShardFailsIfSearchShardRegistersNewerCommit() throws Exception {
         var nodeSettings = Settings.builder()
