@@ -40,6 +40,7 @@ import org.elasticsearch.core.TimeValue;
 import org.elasticsearch.index.Index;
 import org.elasticsearch.index.query.MatchAllQueryBuilder;
 import org.elasticsearch.test.hamcrest.ElasticsearchAssertions;
+import org.elasticsearch.test.junit.annotations.TestLogging;
 import org.elasticsearch.test.transport.MockTransportService;
 import org.elasticsearch.xpack.stateless.AbstractStatelessPluginIntegTestCase;
 import org.elasticsearch.xpack.stateless.StatelessPlugin;
@@ -54,6 +55,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
 import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertAcked;
@@ -480,6 +482,11 @@ public class BlockRefreshUponIndexCreationIT extends AbstractStatelessPluginInte
         );
     }
 
+    @TestLogging(
+        reason = "154605: capture the register-commit send/retry/re-allocation trail and shard state if this flake recurs",
+        value = "org.elasticsearch.xpack.stateless.recovery.TransportSendRecoveryCommitRegistrationAction:DEBUG,"
+            + "org.elasticsearch.xpack.stateless.commits.StatelessCommitService:DEBUG"
+    )
     public void testIndexWithZeroReplicasAndAutoExpandReplicasHasClusterBlocks() throws Exception {
         startMasterAndIndexNode(
             Settings.builder()
@@ -495,9 +502,11 @@ public class BlockRefreshUponIndexCreationIT extends AbstractStatelessPluginInte
         // later retry / re-allocation send are forwarded immediately (a completed SubscribableListener runs late
         // subscribers inline), so recovery can never get stuck on a send the test forgot to forward.
         CountDownLatch recoveryBlockedLatch = new CountDownLatch(1);
+        AtomicInteger registerCommitSendCount = new AtomicInteger();
         SubscribableListener<Void> releaseRegistrations = new SubscribableListener<>();
         MockTransportService.getInstance(searchNodeName).addSendBehavior((connection, requestId, action, request, options) -> {
             if (action.equals(TransportRegisterCommitForRecoveryAction.NAME)) {
+                registerCommitSendCount.incrementAndGet();
                 recoveryBlockedLatch.countDown();
                 releaseRegistrations.addListener(ActionListener.running(() -> {
                     try {
@@ -540,7 +549,20 @@ public class BlockRefreshUponIndexCreationIT extends AbstractStatelessPluginInte
         // Release the held registration(s); any subsequent retry / re-allocation send is forwarded inline.
         releaseRegistrations.onResponse(null);
 
-        assertAcked(createIndexFuture.actionGet());
+        var createIndexResponse = createIndexFuture.actionGet();
+        if (createIndexResponse.isShardsAcknowledged() == false) {
+            // Diagnostics for 154605: the search shard never started. Capture how many register-commit sends the
+            // search node made and the final cluster state (routing + blocks) so a recurrence is diagnosable from
+            // the test output alone, alongside the DEBUG trail enabled via @TestLogging above.
+            logger.warn(
+                "[{}] create-index not shards-acknowledged (acknowledged={}); register-commit sends observed [{}]; cluster state:\n{}",
+                indexName,
+                createIndexResponse.isAcknowledged(),
+                registerCommitSendCount.get(),
+                client().admin().cluster().prepareState(TEST_REQUEST_TIMEOUT).get().getState()
+            );
+        }
+        assertAcked(createIndexResponse);
         ensureGreen(indexName);
     }
 

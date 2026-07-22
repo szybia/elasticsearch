@@ -2937,6 +2937,15 @@ public class StatelessCommitService extends AbstractLifecycleComponent implement
                 .min(Comparator.comparing(VirtualBatchedCompoundCommit::getPrimaryTermAndGeneration));
             var latestUploaded = this.latestUploadedBcc;
             if (latestUploaded == null) {
+                // Expected transient during recovery (see ES-8327 above): the indexing shard has not uploaded any
+                // commit yet, so this registration fails and the search node retries. Previously silent; logged at
+                // DEBUG so that a search shard which never starts (154605) is diagnosable from the indexing node.
+                logger.debug(
+                    "cannot register commit for unpromotable recovery of shard [{}] on node [{}]: "
+                        + "indexing shard still initializing (no uploaded commit yet)",
+                    shardId,
+                    nodeId
+                );
                 throw new NoShardAvailableActionException(shardId, "indexing shard is initializing");
             }
             // onOrAfter (really just "on", see next if block) means the shard *is* uploaded, since the search shard saw it
