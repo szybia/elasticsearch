@@ -20,6 +20,7 @@ import org.elasticsearch.action.support.UnsafePlainActionFuture;
 import org.elasticsearch.blobcache.BlobCacheMetrics;
 import org.elasticsearch.blobcache.common.ByteRange;
 import org.elasticsearch.blobcache.shared.SharedBlobCacheService;
+import org.elasticsearch.blobcache.shared.SharedBlobCacheServiceTestUtils;
 import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.coordination.Coordinator;
 import org.elasticsearch.cluster.metadata.IndexMetadata;
@@ -687,6 +688,13 @@ public class SharedBlobCacheWarmingServiceIT extends AbstractStatelessPluginInte
         return measurementsAsLongs.getFirst();
     }
 
+    // TODO(szybia): REMOVE BEFORE PR - diagnose #153406: warmed gen-N region evicted before engine-open, or never warmed?
+    @TestLogging(
+        reason = "diagnose #153406: warmed gen-N region evicted before engine-open, or never warmed?",
+        value = "org.elasticsearch.xpack.stateless.lucene.BlobCacheIndexInput:DEBUG,"
+            + "org.elasticsearch.xpack.stateless.cache.SharedBlobCacheWarmingService:DEBUG,"
+            + "org.elasticsearch.xpack.stateless.cache.reader.CacheFileReader:DEBUG"
+    )
     public void testCacheIsWarmedBeforeSearchShardRecoveryWhenVBCCGetsUploaded() {
         var nodeSettings = Settings.builder()
             .put(SharedBlobCacheService.SHARED_CACHE_SIZE_SETTING.getKey(), CACHE_SIZE.getStringRep())
@@ -1419,6 +1427,17 @@ public class SharedBlobCacheWarmingServiceIT extends AbstractStatelessPluginInte
         final var mockRepository = getObjectStoreMockRepository(getObjectStoreService(node));
         final var transportService = MockTransportService.getInstance(node);
         runOnWarmingComplete(node, type, ActionListener.running(() -> {
+            // TODO(szybia): REMOVE BEFORE PR - diagnose #153406: prove gen-N was resident (+ cache pressure) right after warming
+            final var cache = internalCluster().getInstance(StatelessPlugin.SharedBlobCacheServiceSupplier.class, node).get();
+            final var genN = StatelessCompoundCommit.blobNameFromGeneration(generationToBlock);
+            logger.warn(
+                "SZYBIA SNAPSHOT warm-complete node={} gen={} free={} genNByFreq={} genNByFreqInclEvicted={}",
+                node,
+                generationToBlock,
+                SharedBlobCacheServiceTestUtils.freeRegionCount(cache),
+                SharedBlobCacheServiceTestUtils.countCachedRegionsByFreq(cache, k -> k.fileName().equals(genN)),
+                SharedBlobCacheServiceTestUtils.countCachedRegionsByFreq(cache, k -> k.fileName().equals(genN), true)
+            );
             logger.info("--> fail object store repository after warming");
             // set exception filename pattern FIRST, before toggling IO exceptions for the repo
             mockRepository.setRandomIOExceptionPattern(".*" + StatelessCompoundCommit.blobNameFromGeneration(generationToBlock) + ".*");

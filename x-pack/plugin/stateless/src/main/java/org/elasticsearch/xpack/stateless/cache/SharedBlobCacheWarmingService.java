@@ -1120,6 +1120,14 @@ public class SharedBlobCacheWarmingService {
             final long commitEndExclusive = startPosition + sizeInBytes;
             // Cap at the compound commit end. The previous region-floor heuristic could shrink the range below commitEndExclusive
             // when the warm end fell in the first half of a cache region, leaving the commit tail cold.
+            // TODO(szybia): REMOVE BEFORE PR - diagnose #153406 warmed byte range per gen (eviction vs coverage gap)
+            logger.warn(
+                "SZYBIA WARMRANGE blob={} ratio={} range=[{},{})",
+                referencedCC.statelessCompoundCommitReference().bccBlobFile().blobName(),
+                warmingRatio,
+                startPosition,
+                Math.min(warmEndExclusive, commitEndExclusive)
+            );
             return ByteRange.of(startPosition, Math.min(warmEndExclusive, commitEndExclusive));
         }
     }

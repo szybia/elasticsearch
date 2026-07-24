@@ -232,6 +232,8 @@ public final class BlobCacheIndexInput extends BlobCacheBufferedIndexInput imple
         }
         int positionBeforeRetry = b.position();
         int limitBeforeRetry = b.limit();
+        // TODO(szybia): REMOVE BEFORE PR - diagnose #153406 cache miss that falls through to the (blocked) object store
+        logger.warn("SZYBIA MISS file={} pos={} len={}", super.toString(), position, length);
         // Normally we expect reads that overlap to synchronize through the SparseFileTracker so that only one read
         // fills the cache from the source, and the others subscribe to the gaps it fills. Under these circumstances
         // we would only need a single retry for ResourceAlreadyUploadedException, because only the read that has claimed

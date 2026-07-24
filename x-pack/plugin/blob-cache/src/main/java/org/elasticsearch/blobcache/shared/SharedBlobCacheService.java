@@ -1223,6 +1223,8 @@ public class SharedBlobCacheService<KeyType extends SharedBlobCacheService.KeyBa
             assert Thread.holdsLock(blobCacheService) : "must hold lock when evicting";
             if (refCount() <= 1 && evict()) {
                 logger.trace("evicted {} with channel offset {}", regionKey, physicalStartOffset());
+                // TODO(szybia): REMOVE BEFORE PR - diagnose #153406 eviction of warmed regions (names blob=stateless_commit_N)
+                logger.warn("SZYBIA EVICT tryEvict {} channelOffset={}", regionKey, physicalStartOffset());
                 blobCacheService.evictCount.increment();
                 blobCacheService.blobCacheMetrics.getTotalEvictedCount().increment();
                 decRef();
@@ -1235,6 +1237,8 @@ public class SharedBlobCacheService<KeyType extends SharedBlobCacheService.KeyBa
             assert Thread.holdsLock(blobCacheService) : "must hold lock when evicting";
             if (refCount() <= 1 && evict()) {
                 logger.trace("evicted and take {} with channel offset {}", regionKey, physicalStartOffset());
+                // TODO(szybia): REMOVE BEFORE PR - diagnose #153406 eviction of warmed regions (names blob=stateless_commit_N)
+                logger.warn("SZYBIA EVICT tryEvictNoDecRef {} channelOffset={}", regionKey, physicalStartOffset());
                 blobCacheService.evictCount.increment();
                 blobCacheService.blobCacheMetrics.getTotalEvictedCount().increment();
                 return true;
@@ -1247,6 +1251,8 @@ public class SharedBlobCacheService<KeyType extends SharedBlobCacheService.KeyBa
             assert Thread.holdsLock(blobCacheService) : "must hold lock when evicting";
             if (evict()) {
                 logger.trace("force evicted {} with channel offset {}", regionKey, physicalStartOffset());
+                // TODO(szybia): REMOVE BEFORE PR - diagnose #153406 eviction of warmed regions (names blob=stateless_commit_N)
+                logger.warn("SZYBIA EVICT forceEvict {} channelOffset={}", regionKey, physicalStartOffset());
                 blobCacheService.evictCount.increment();
                 blobCacheService.blobCacheMetrics.getTotalEvictedCount().increment();
                 decRef();
