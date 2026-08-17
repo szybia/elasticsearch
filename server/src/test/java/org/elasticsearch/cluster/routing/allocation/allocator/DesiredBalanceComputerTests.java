@@ -110,6 +110,7 @@ import static org.hamcrest.Matchers.allOf;
 import static org.hamcrest.Matchers.anyOf;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.everyItem;
+import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.hasEntry;
 import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.lessThanOrEqualTo;
@@ -2316,6 +2317,145 @@ public class DesiredBalanceComputerTests extends ESAllocationTestCase {
         );
         assertThat(desiredBalance.finishReason(), equalTo(DesiredBalance.ComputationFinishReason.CONVERGED));
         assertDesiredAssignments(desiredBalance, finalExpectedAssignments);
+    }
+
+    /// A new index is created on a cluster whose balance never converges, and every node refuses that index's primary for the whole
+    /// simulation. The safeguard from [#115511](https://github.com/elastic/elasticsearch/pull/115511) publishes an intermediate desired
+    /// balance once a newly created shard has been waiting for
+    /// [DesiredBalanceComputer#MAX_BALANCE_COMPUTATION_TIME_DURING_INDEX_CREATION_SETTING], but it only arms after the simulation has
+    /// placed such a shard, so a primary the simulation cannot place never triggers it. The computation instead keeps running until the
+    /// input goes stale, and the assignment the reconciler could have acted on is published far later than the budget allows. This
+    /// asserts the current behaviour; the assertions flip once the safeguard also arms for newly created shards that stay unassigned.
+    public void testNoEarlyPublishWhenNewPrimaryCannotBeAssigned() {
+        runComputationForNewIndexOnNeverConvergingCluster(false);
+    }
+
+    /// Contrast case for [DesiredBalanceComputerTests#testNoEarlyPublishWhenNewPrimaryCannotBeAssigned]: the same never-converging
+    /// cluster does publish an intermediate desired balance once the budget elapses, provided the simulation places the new primary.
+    public void testEarlyPublishWhenNewPrimaryCanBeAssigned() {
+        runComputationForNewIndexOnNeverConvergingCluster(true);
+    }
+
+    private void runComputationForNewIndexOnNeverConvergingCluster(boolean newIndexAssignable) {
+        final var churnIndex = IndexMetadata.builder(randomIdentifier()).settings(indexSettings(IndexVersion.current(), 1, 0)).build();
+        final var newIndex = IndexMetadata.builder(randomValueOtherThan(churnIndex.getIndex().getName(), () -> randomIdentifier()))
+            .settings(indexSettings(IndexVersion.current(), 1, 0))
+            .build();
+        final var newShardId = new ShardId(newIndex.getIndex(), 0);
+
+        final var clusterState = ClusterState.builder(ClusterName.DEFAULT)
+            .nodes(
+                DiscoveryNodes.builder()
+                    .add(newNode("master", Set.of(DiscoveryNodeRole.MASTER_ROLE)))
+                    .add(newNode("node-0", Set.of(DiscoveryNodeRole.DATA_ROLE)))
+                    .add(newNode("node-1", Set.of(DiscoveryNodeRole.DATA_ROLE)))
+                    .masterNodeId("master")
+                    .localNodeId("master")
+            )
+            .metadata(Metadata.builder().put(churnIndex, false).put(newIndex, false))
+            .routingTable(
+                RoutingTable.builder(TestShardRoutingRoleStrategies.DEFAULT_ROLE_ONLY)
+                    .add(
+                        IndexRoutingTable.builder(churnIndex.getIndex())
+                            .addShard(newShardRouting(new ShardId(churnIndex.getIndex(), 0), "node-0", null, true, STARTED))
+                    )
+                    // the new index primary is unassigned with reason INDEX_CREATED and has no last allocated node
+                    .addAsNew(newIndex)
+            )
+            .build();
+
+        // stands in for the customer's refusing decider: no node accepts the new index primary during the simulation
+        final var routingAllocation = TestRoutingAllocationFactory.forClusterState(clusterState)
+            .allocationDeciders(new AllocationDecider() {
+                @Override
+                public Decision canAllocate(ShardRouting shardRouting, RoutingNode node, RoutingAllocation allocation) {
+                    return newIndexAssignable || shardRouting.index().equals(newIndex.getIndex()) == false ? Decision.YES : Decision.NO;
+                }
+            })
+            .build();
+
+        final var delegateAllocator = new BalancedShardsAllocator();
+        final var churningAllocator = new ShardsAllocator() {
+            @Override
+            public void allocate(RoutingAllocation allocation) {
+                delegateAllocator.allocate(allocation);
+                // ping-pong the started shards between the data nodes so that every round ends with an initializing shard
+                relocateStartedShards(allocation, "node-0", "node-1");
+                relocateStartedShards(allocation, "node-1", "node-0");
+            }
+
+            private static void relocateStartedShards(RoutingAllocation allocation, String fromNodeId, String toNodeId) {
+                for (var shard : allocation.routingNodes().node(fromNodeId).shardsWithState(STARTED).toList()) {
+                    allocation.routingNodes()
+                        .relocateShard(
+                            shard,
+                            toNodeId,
+                            0L,
+                            "test",
+                            allocation.changes(),
+                            ShardRouting.RecoveryPriority.RELOCATION_CAN_REMAIN_NO
+                        );
+                }
+            }
+
+            @Override
+            public ShardAllocationDecision explainShardAllocation(ShardRouting shard, RoutingAllocation allocation) {
+                throw new AssertionError("only used for allocation explain");
+            }
+        };
+
+        // 100ms per clock read: one read before the loop plus one per iteration
+        final var currentTimeMillis = new AtomicLong(0L);
+        final var desiredBalanceComputer = new DesiredBalanceComputer(
+            createBuiltInClusterSettings(),
+            TimeProviderUtils.create(() -> currentTimeMillis.addAndGet(100L)),
+            churningAllocator,
+            TEST_ONLY_EXPLAINER
+        );
+        final var budgetMillis = DesiredBalanceComputer.MAX_BALANCE_COMPUTATION_TIME_DURING_INDEX_CREATION_SETTING.get(Settings.EMPTY)
+            .millis();
+
+        final var expectationDescription = "early publish to not delay the newly created index shard";
+        final var expectationMessage = "*in order to not delay assignment of newly created index shards*";
+        final MockLog.AbstractEventExpectation expectation = newIndexAssignable
+            ? new MockLog.SeenEventExpectation(
+                expectationDescription,
+                DesiredBalanceComputer.class.getCanonicalName(),
+                Level.INFO,
+                expectationMessage
+            )
+            : new MockLog.UnseenEventExpectation(
+                expectationDescription,
+                DesiredBalanceComputer.class.getCanonicalName(),
+                Level.INFO,
+                expectationMessage
+            );
+
+        final var computationStartMillis = currentTimeMillis.get();
+        final var iteration = new AtomicInteger(0);
+        final var maxIterations = randomIntBetween(50, 150);
+        final var desiredBalance = new AtomicReference<DesiredBalance>();
+        assertLoggerExpectationsFor(
+            () -> desiredBalance.set(
+                desiredBalanceComputer.compute(
+                    DesiredBalance.BECOME_MASTER_INITIAL,
+                    DesiredBalanceInput.create(randomInt(), routingAllocation),
+                    queue(),
+                    input -> iteration.incrementAndGet() < maxIterations
+                )
+            ),
+            expectation
+        );
+
+        if (newIndexAssignable) {
+            assertThat(desiredBalance.get().finishReason(), equalTo(DesiredBalance.ComputationFinishReason.STOP_EARLY));
+            assertThat(desiredBalance.get().assignments().get(newShardId).assigned(), equalTo(1));
+        } else {
+            assertThat(desiredBalance.get().finishReason(), equalTo(DesiredBalance.ComputationFinishReason.YIELD_TO_NEW_INPUT));
+            assertThat(currentTimeMillis.get() - computationStartMillis, greaterThan(budgetMillis));
+            // ignored == 0 makes this entry actionable for the reconciler, which is why publishing it early would have mattered
+            assertThat(desiredBalance.get().assignments().get(newShardId), equalTo(new ShardAssignment(Set.of(), 1, 1, 0)));
+        }
     }
 
     private static DesiredBalanceComputer createDesiredBalanceComputer(ShardsAllocator allocator) {
