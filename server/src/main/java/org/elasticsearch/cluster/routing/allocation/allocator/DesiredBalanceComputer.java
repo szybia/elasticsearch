@@ -396,6 +396,14 @@ public class DesiredBalanceComputer {
                 }
             }
 
+            // TEMPORARY: simulate the candidate fix to check the new test detects it
+            for (final var shardRouting : routingNodes.unassigned().ignored()) {
+                if (shardRouting.unassignedInfo() != null
+                    && shardRouting.unassignedInfo().reason() == UnassignedInfo.Reason.INDEX_CREATED) {
+                    assignedNewlyCreatedPrimaryOrReplicaShards = true;
+                }
+            }
+
             i += 1;
             numIterationsSinceLastConverged += 1;
             final int iterations = i;
