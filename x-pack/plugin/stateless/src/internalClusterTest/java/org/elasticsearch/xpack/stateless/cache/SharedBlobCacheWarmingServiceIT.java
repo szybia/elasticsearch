@@ -687,6 +687,17 @@ public class SharedBlobCacheWarmingServiceIT extends AbstractStatelessPluginInte
         return measurementsAsLongs.getFirst();
     }
 
+    /// Search shard recovery must not resume until the bytes warming reported as done are actually resident in cache.
+    ///
+    /// The test flushes the virtual batched compound commit (VBCC) mid-warming, so the first attempt to read a range from the indexing
+    /// node fails with `ResourceAlreadyUploadedException` and warming has to re-drive that range from the object store. The object store
+    /// is then blocked, so any range warming misses shows up as a failed read once the engine opens.
+    ///
+    /// This used to fail whenever two callers raced for the same range: `SharedBlobCacheService.CacheFileRegion#populate` told the caller
+    /// that lost the gap-claim race `false` straight away, and warming maps `false` to success. Warming therefore reported done for bytes
+    /// another caller was still fetching, and recovery resumed against a partially warm cache. Search warming now passes
+    /// `awaitPendingFill`, so the losing caller is completed only once the winning caller's fill is resident, or with the winning
+    /// caller's exception, which the `ResourceAlreadyUploadedException` retry in `WarmingTask` then re-drives from the object store.
     public void testCacheIsWarmedBeforeSearchShardRecoveryWhenVBCCGetsUploaded() {
         var nodeSettings = Settings.builder()
             .put(SharedBlobCacheService.SHARED_CACHE_SIZE_SETTING.getKey(), CACHE_SIZE.getStringRep())
@@ -1516,6 +1527,10 @@ public class SharedBlobCacheWarmingServiceIT extends AbstractStatelessPluginInte
             super(environment, settings, threadPool, blobCacheMetrics, clusterService, indicesService, metricHolder);
         }
 
+        /**
+         * The test lever that simulates "no free region for warming". It must keep overriding exactly the signature that warming calls,
+         * otherwise it silently stops intercepting anything: see {@link SharedBlobCacheWarmingService}'s {@code WarmingTask}.
+         */
         @Override
         public void maybeFetchRange(
             FileCacheKey cacheKey,
@@ -1525,13 +1540,24 @@ public class SharedBlobCacheWarmingServiceIT extends AbstractStatelessPluginInte
             RangeMissingHandler writer,
             Executor fetchExecutor,
             long timestampMillis,
+            boolean awaitPendingFill,
             ActionListener<Boolean> listener
         ) {
             if (noFreeRegionForWarming.get()) {
                 // Simulate no free region
                 listener.onResponse(false);
             } else {
-                super.maybeFetchRange(cacheKey, region, range, blobLength, writer, fetchExecutor, timestampMillis, listener);
+                super.maybeFetchRange(
+                    cacheKey,
+                    region,
+                    range,
+                    blobLength,
+                    writer,
+                    fetchExecutor,
+                    timestampMillis,
+                    awaitPendingFill,
+                    listener
+                );
             }
         }
     }
