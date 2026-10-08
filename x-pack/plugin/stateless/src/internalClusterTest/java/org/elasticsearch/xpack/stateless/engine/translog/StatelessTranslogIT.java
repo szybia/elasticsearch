@@ -26,6 +26,7 @@ import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.common.Priority;
 import org.elasticsearch.common.blobstore.BlobContainer;
 import org.elasticsearch.common.blobstore.support.BlobMetadata;
+import org.elasticsearch.common.breaker.CircuitBreaker;
 import org.elasticsearch.common.bytes.BytesReference;
 import org.elasticsearch.common.io.stream.InputStreamStreamInput;
 import org.elasticsearch.common.io.stream.StreamInput;
@@ -42,7 +43,10 @@ import org.elasticsearch.index.shard.IndexShard;
 import org.elasticsearch.index.shard.ShardId;
 import org.elasticsearch.index.translog.BufferedChecksumStreamInput;
 import org.elasticsearch.index.translog.Translog;
+import org.elasticsearch.indices.breaker.CircuitBreakerService;
+import org.elasticsearch.node.NodeMocksPlugin;
 import org.elasticsearch.node.NodeRoleSettings;
+import org.elasticsearch.plugins.Plugin;
 import org.elasticsearch.telemetry.InstrumentType;
 import org.elasticsearch.telemetry.Measurement;
 import org.elasticsearch.telemetry.RecordingMeterRegistry;
@@ -51,10 +55,12 @@ import org.elasticsearch.test.transport.MockTransportService;
 import org.elasticsearch.xcontent.XContentType;
 import org.elasticsearch.xpack.stateless.AbstractStatelessPluginIntegTestCase;
 import org.elasticsearch.xpack.stateless.cluster.coordination.StatelessClusterConsistencyService;
+import org.junit.After;
 
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -84,6 +90,48 @@ import static org.hamcrest.Matchers.greaterThanOrEqualTo;
 import static org.hamcrest.Matchers.lessThanOrEqualTo;
 
 public class StatelessTranslogIT extends AbstractStatelessPluginIntegTestCase {
+
+    // TODO(szybia): REMOVE BEFORE PR
+    // Force MockBigArrays (REQUEST breaker accounting for recycler pages) on every run; the base class adds it with probability 1/4.
+    @Override
+    protected Collection<Class<? extends Plugin>> getMockPlugins() {
+        final var mocks = new ArrayList<>(super.getMockPlugins());
+        if (mocks.contains(NodeMocksPlugin.class) == false) {
+            mocks.add(NodeMocksPlugin.class);
+        }
+        return List.copyOf(mocks);
+    }
+
+    // TODO(szybia): REMOVE BEFORE PR
+    // Runs before ESIntegTestCase's cleanup, so this is the state the breaker check is about to inspect.
+    @After
+    public void logTranslogReplicatorStatePerIndexNode() {
+        if (internalCluster().size() == 0) {
+            return;
+        }
+        for (String nodeName : internalCluster().getNodeNames()) {
+            Settings nodeSettings = internalCluster().getInstance(Settings.class, nodeName);
+            if (NodeRoleSettings.NODE_ROLES_SETTING.get(nodeSettings).contains(DiscoveryNodeRole.INDEX_ROLE) == false) {
+                continue;
+            }
+            try {
+                TranslogReplicator replicator = getTranslogReplicator(nodeName);
+                long requestBreakerUsed = internalCluster().getInstance(CircuitBreakerService.class, nodeName)
+                    .getBreaker(CircuitBreaker.REQUEST)
+                    .getUsed();
+                logger.info(
+                    "--> [{}] before cleanup: registeredShards={} translogBuffered={} requestBreaker={}",
+                    nodeName,
+                    replicator.getRegisteredShardCount(),
+                    replicator.getTranslogBufferedDataSize(),
+                    requestBreakerUsed
+                );
+            } catch (Exception e) {
+                // diagnostic only; never mask the real test failure
+                logger.warn(() -> "--> [" + nodeName + "] before cleanup: failed to read state", e);
+            }
+        }
+    }
 
     public void testTranslogFileHoldDirectoryOfReferencedFiles() throws Exception {
         startMasterOnlyNode();
@@ -522,6 +570,7 @@ public class StatelessTranslogIT extends AbstractStatelessPluginIntegTestCase {
 
     @TestLogging(
         value = "org.elasticsearch.xpack.stateless.engine.translog.TranslogReplicator:debug,"
+            + "org.elasticsearch.xpack.stateless.engine.translog.NodeTranslogBuffer:debug," // TODO(szybia): REMOVE BEFORE PR
             + "org.elasticsearch.xpack.stateless.engine.translog.TranslogReplicatorReader:debug",
         reason = "to ensure we translog events on DEBUG level"
     )

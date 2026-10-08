@@ -286,9 +286,26 @@ public class TranslogReplicator extends AbstractLifecycleComponent {
 
     public void unregister(ShardId shardId) {
         var unregistered = shardSyncStates.remove(shardId);
-        logger.debug(() -> format("shard %s unregistered with translog replicator", shardId));
+        // TODO(szybia): REMOVE BEFORE PR
+        final NodeTranslogBuffer buffer = currentBuffer.get();
+        final long bytesStillBuffered = buffer == null || unregistered == null ? 0 : buffer.getShardBufferSize(unregistered);
+        logger.debug(
+            () -> format(
+                "shard %s unregistered with translog replicator [bytesStillBuffered=%d, nodeBuffered=%d, remainingShards=%d]",
+                shardId,
+                bytesStillBuffered,
+                buffer == null ? 0 : buffer.getBufferSize(),
+                shardSyncStates.size()
+            )
+        );
         assert unregistered != null;
         unregistered.close();
+    }
+
+    // TODO(szybia): REMOVE BEFORE PR
+    // visible for testing
+    public int getRegisteredShardCount() {
+        return shardSyncStates.size();
     }
 
     public void add(final ShardId shardId, final Translog.Serialized operation, final long seqNo, final Translog.Location location) {

@@ -7,6 +7,8 @@
 
 package org.elasticsearch.xpack.stateless.engine.translog;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.apache.lucene.internal.hppc.LongArrayList;
 import org.elasticsearch.common.bytes.CompositeBytesReference;
 import org.elasticsearch.common.io.stream.RecyclerBytesStreamOutput;
@@ -30,6 +32,9 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
 public class NodeTranslogBuffer implements Releasable {
+
+    // TODO(szybia): REMOVE BEFORE PR
+    private static final Logger logger = LogManager.getLogger(NodeTranslogBuffer.class);
 
     private final Semaphore semaphore = new Semaphore(Integer.MAX_VALUE);
 
@@ -71,6 +76,12 @@ public class NodeTranslogBuffer implements Releasable {
     // visible for testing
     long getBufferSize() {
         return bufferSize.get();
+    }
+
+    // TODO(szybia): REMOVE BEFORE PR
+    long getShardBufferSize(ShardSyncState shardSyncState) {
+        ShardBuffer shardBuffer = buffers.get(shardSyncState);
+        return shardBuffer == null ? 0 : shardBuffer.buffer().position();
     }
 
     /**
@@ -143,6 +154,21 @@ public class NodeTranslogBuffer implements Releasable {
                         }
                     }
                 }
+
+                // TODO(szybia): REMOVE BEFORE PR
+                final long written = compoundTranslogStream.position();
+                final long total = bufferSize.get();
+                final boolean hasData = dataToSync;
+                logger.debug(
+                    () -> Strings.format(
+                        "completed node translog buffer [generation=%d, bufferedBytes=%d, writtenBytes=%d, droppedBytes=%d, upload=%b]",
+                        generation,
+                        total,
+                        written,
+                        total - written,
+                        hasData
+                    )
+                );
 
                 // It is possible that there were operations in the buffer which are no longer associated with active shards.
                 // If there is no data to sync related to active shards, do not produce a translog to sync
