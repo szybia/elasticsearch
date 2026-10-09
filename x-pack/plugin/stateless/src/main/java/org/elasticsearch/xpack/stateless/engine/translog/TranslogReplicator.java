@@ -300,6 +300,7 @@ public class TranslogReplicator extends AbstractLifecycleComponent {
         );
         assert unregistered != null;
         unregistered.close();
+        requestSyncFlush();
     }
 
     // TODO(szybia): REMOVE BEFORE PR
