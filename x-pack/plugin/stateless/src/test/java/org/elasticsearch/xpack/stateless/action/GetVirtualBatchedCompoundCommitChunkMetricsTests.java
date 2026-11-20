@@ -36,13 +36,13 @@ public class GetVirtualBatchedCompoundCommitChunkMetricsTests extends ESTestCase
         );
     }
 
-    public void testRecordSingleRequestOnlyUpdatesRequestMetrics() {
+    public void testRecordAttemptOnlyUpdatesRequestMetrics() {
         final var registry = new RecordingMeterRegistry();
         final var metrics = GetVirtualBatchedCompoundCommitChunkMetrics.register(registry);
 
         final boolean success = randomBoolean();
         final long millis = randomLongBetween(0, 10_000);
-        metrics.record(false, success, millis);
+        metrics.recordAttemptSuccessAndDuration(success, millis);
 
         final var expectedAttributes = Map.<String, Object>of(OUTCOME_ATTRIBUTE, success ? OUTCOME_SUCCESS : OUTCOME_FAILURE);
 
@@ -63,13 +63,13 @@ public class GetVirtualBatchedCompoundCommitChunkMetricsTests extends ESTestCase
         );
     }
 
-    public void testRecordRequestIncludingRetriesOnlyUpdatesRetriesMetrics() {
+    public void testRecordResponseOnlyUpdatesRetriesMetrics() {
         final var registry = new RecordingMeterRegistry();
         final var metrics = GetVirtualBatchedCompoundCommitChunkMetrics.register(registry);
 
         final boolean success = randomBoolean();
         final long millis = randomLongBetween(0, 10_000);
-        metrics.record(true, success, millis);
+        metrics.recordResponseSuccessAndDuration(success, millis);
 
         final var expectedAttributes = Map.<String, Object>of(OUTCOME_ATTRIBUTE, success ? OUTCOME_SUCCESS : OUTCOME_FAILURE);
 

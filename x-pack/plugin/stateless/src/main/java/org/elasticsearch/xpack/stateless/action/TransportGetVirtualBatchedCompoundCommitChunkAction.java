@@ -128,7 +128,7 @@ public class TransportGetVirtualBatchedCompoundCommitChunkAction extends Transpo
         ActionListener<GetVirtualBatchedCompoundCommitChunkResponse> listener
     ) {
         assert transportService.getLocalNode().hasRole(DiscoveryNodeRole.SEARCH_ROLE.roleName()) : "not a search node";
-        ActionListener.run(metricsListener(listener, true), l -> {
+        ActionListener.run(metricsListenerForResponse(listener), l -> {
             if (task != null) {
                 request.setParentTask(clusterService.localNode().getId(), task.getId());
             }
@@ -192,7 +192,7 @@ public class TransportGetVirtualBatchedCompoundCommitChunkAction extends Transpo
     ) {
         assert discoveryNode != null : request;
         // Measure the time between sending the request and receiving its response, before the response is used by the caller
-        final var listener = metricsListener(outerListener, false);
+        final var listener = metricsListenerForAttempt(outerListener);
         transportService.sendRequest(
             discoveryNode,
             transportPrimaryAction,
@@ -278,33 +278,46 @@ public class TransportGetVirtualBatchedCompoundCommitChunkAction extends Transpo
         });
     }
 
+    private ActionListener<GetVirtualBatchedCompoundCommitChunkResponse> metricsListenerForAttempt(
+        ActionListener<GetVirtualBatchedCompoundCommitChunkResponse> listener
+    ) {
+        return metricsListener(listener, metrics::recordAttemptSuccessAndDuration);
+    }
+
+    private ActionListener<GetVirtualBatchedCompoundCommitChunkResponse> metricsListenerForResponse(
+        ActionListener<GetVirtualBatchedCompoundCommitChunkResponse> listener
+    ) {
+        return metricsListener(listener, metrics::recordResponseSuccessAndDuration);
+    }
+
     /**
      * Wraps the listener so that the time elapsed since this method was called is recorded in the metrics when the listener completes,
      * before the response (or failure) is passed to the wrapped listener.
-     *
-     * @param listener       the listener to wrap
-     * @param includeRetries {@code false} to measure a single request sent to the indexing node, {@code true} to measure the whole action
-     *                       execution including retries
      */
     private ActionListener<GetVirtualBatchedCompoundCommitChunkResponse> metricsListener(
-        final ActionListener<GetVirtualBatchedCompoundCommitChunkResponse> listener,
-        final boolean includeRetries
+        ActionListener<GetVirtualBatchedCompoundCommitChunkResponse> listener,
+        OutcomeRecorder recorder
     ) {
         final ThreadPool threadPool = transportService.getThreadPool();
         final long startTimeInMillis = threadPool.rawRelativeTimeInMillis();
         return new ActionListener<>() {
             @Override
             public void onResponse(GetVirtualBatchedCompoundCommitChunkResponse response) {
-                metrics.record(includeRetries, true, threadPool.rawRelativeTimeInMillis() - startTimeInMillis);
+                recorder.record(true, threadPool.rawRelativeTimeInMillis() - startTimeInMillis);
                 listener.onResponse(response);
             }
 
             @Override
             public void onFailure(Exception e) {
-                metrics.record(includeRetries, false, threadPool.rawRelativeTimeInMillis() - startTimeInMillis);
+                recorder.record(false, threadPool.rawRelativeTimeInMillis() - startTimeInMillis);
                 listener.onFailure(e);
             }
         };
+    }
+
+    @FunctionalInterface
+    private interface OutcomeRecorder {
+        void record(boolean success, long durationInMillis);
     }
 
 }

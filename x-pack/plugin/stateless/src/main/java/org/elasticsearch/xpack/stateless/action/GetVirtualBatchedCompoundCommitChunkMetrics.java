@@ -70,20 +70,19 @@ public record GetVirtualBatchedCompoundCommitChunkMetrics(
         );
     }
 
-    /// Records a completed request.
-    ///
-    /// @param includeRetries `false` to record a single attempt, i.e. one request sent to the indexing node; `true` to record a whole
-    /// action execution, including the retries
-    /// @param success whether the request completed with a response
-    /// @param durationInMillis the duration of the request in milliseconds
-    public void record(boolean includeRetries, boolean success, long durationInMillis) {
-        final var attributes = Map.<String, Object>of(OUTCOME_ATTRIBUTE, success ? OUTCOME_SUCCESS : OUTCOME_FAILURE);
-        if (includeRetries) {
-            requestWithRetriesCounter.incrementBy(1L, attributes);
-            requestWithRetriesDurationHistogram.record(durationInMillis, attributes);
-        } else {
-            requestCounter.incrementBy(1L, attributes);
-            requestDurationHistogram.record(durationInMillis, attributes);
-        }
+    public void recordAttemptSuccessAndDuration(boolean success, long durationInMillis) {
+        final var attributes = attributes(success);
+        requestCounter.incrementBy(1L, attributes);
+        requestDurationHistogram.record(durationInMillis, attributes);
+    }
+
+    public void recordResponseSuccessAndDuration(boolean success, long durationInMillis) {
+        final var attributes = attributes(success);
+        requestWithRetriesCounter.incrementBy(1L, attributes);
+        requestWithRetriesDurationHistogram.record(durationInMillis, attributes);
+    }
+
+    private static Map<String, Object> attributes(boolean success) {
+        return Map.of(OUTCOME_ATTRIBUTE, success ? OUTCOME_SUCCESS : OUTCOME_FAILURE);
     }
 }
